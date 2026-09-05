@@ -40,7 +40,20 @@
   // Este valor es la hipótesis de partida para volver a apuntar a 2-3 min --
   // el criterio C3 del portón lo mide jugando, no a ciegas.
   const FLOOR_HP = { torreta: 30, muro: 35 };
-  const FLOOR_H = { torreta: 40, muro: 40 };
+  const FLOOR_H_MAX = 40;
+  const FLOOR_H_MIN = 18;
+  // Alto real de piso, recalculado en cada layout() segun la altura disponible.
+  // Antes era fijo en 40 px: en un celular horizontal (~360 px de alto util)
+  // la torre sola ocupaba el 56% de la pantalla y el HUD le caia encima.
+  let FLOOR_H_CUR = FLOOR_H_MAX;
+
+  // --- Bandas del HUD -----------------------------------------------------
+  // El mundo (suelo, torres, gomeras) vive ENTRE estas dos bandas, nunca
+  // debajo. Es la regla que evita las tres colisiones que aparecieron al
+  // probar en celular: leyenda sobre la torre, barra de energia sobre la
+  // torre, y botones de arma tapados por la barra del navegador.
+  const HUD_TOP = 44;
+  const HUD_BOTTOM = 60;
   // Sin rol 'nucleo' -- 5 pisos, alternando muro/torreta (hallazgo #2).
   const LAYOUT = ['muro', 'torreta', 'muro', 'torreta', 'muro'];
 
@@ -90,6 +103,7 @@
   let shakeMag = 0;
   let playerWasDestroyed = false;
   let aiWasDestroyed = false;
+  let viewW = 800, viewH = 450; // tamano VISIBLE en px CSS (no el backing store)
   let duelIndex = 0;
   let duelLogged = false; // evita registrar dos veces el fin del mismo duelo
   let started = false;
@@ -154,7 +168,7 @@
         material: r === 'muro' ? randomMaterial() : null,
         maxHp: FLOOR_HP[r],
         width: FLOOR_W,
-        height: FLOOR_H[r]
+        height: FLOOR_H_CUR
       };
     });
   }
@@ -165,25 +179,56 @@
   }
 
   function towerHeight() {
-    return LAYOUT.reduce(function (sum, r) { return sum + FLOOR_H[r]; }, 0);
+    return LAYOUT.length * FLOOR_H_CUR;
+  }
+
+  // Tamano realmente VISIBLE. En mobile `window.innerHeight` incluye la franja
+  // que tapan las barras del navegador, asi que la parte de abajo del juego
+  // quedaba dibujada debajo de la barra de navegacion y no se veia.
+  // `visualViewport` da el area visible de verdad.
+  function viewportSize() {
+    const vv = window.visualViewport;
+    return {
+      w: Math.max(320, Math.round(vv ? vv.width : window.innerWidth)),
+      h: Math.max(240, Math.round(vv ? vv.height : window.innerHeight))
+    };
   }
 
   function layout() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    groundY = Math.round(canvas.height * 0.85);
+    const vp = viewportSize();
+    viewW = vp.w;
+    viewH = vp.h;
 
-    const margin = Math.round(canvas.width * MARGIN_RATIO);
-    const minGap = Math.max(canvas.width * MIN_GAP_RATIO, MIN_GAP_PX);
-    const widthBudget = (canvas.width - 2 * margin - 2 * MUZZLE_PAD - minGap) / 2;
+    // Backing store en pixeles fisicos y transform por devicePixelRatio: en un
+    // celular de pantalla densa, dibujar 1:1 se veia borroso -- y el prototipo
+    // existe justamente para juzgar como se ve y se siente.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.style.width = viewW + 'px';
+    canvas.style.height = viewH + 'px';
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(viewH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // El suelo se apoya sobre la banda inferior del HUD, no en un % fijo de la
+    // altura: asi el mundo nunca invade el espacio de los botones.
+    groundY = viewH - HUD_BOTTOM - 4;
+
+    // La torre se escala para entrar en la banda jugable con aire arriba.
+    const availH = groundY - HUD_TOP;
+    FLOOR_H_CUR = Math.max(FLOOR_H_MIN, Math.min(FLOOR_H_MAX,
+      Math.floor((availH * 0.70) / LAYOUT.length)));
+
+    const margin = Math.round(viewW * MARGIN_RATIO);
+    const minGap = Math.max(viewW * MIN_GAP_RATIO, MIN_GAP_PX);
+    const widthBudget = (viewW - 2 * margin - 2 * MUZZLE_PAD - minGap) / 2;
     FLOOR_W = Math.max(FLOOR_W_MIN, Math.min(FLOOR_W_MAX, widthBudget));
 
-    for (const f of playerTower.floors) f.width = FLOOR_W;
-    for (const f of aiTower.floors) f.width = FLOOR_W;
+    for (const f of playerTower.floors) { f.width = FLOOR_W; f.height = FLOOR_H_CUR; }
+    for (const f of aiTower.floors) { f.width = FLOOR_W; f.height = FLOOR_H_CUR; }
 
     playerTower.originX = margin;
     playerTower.groundY = groundY;
-    aiTower.originX = canvas.width - margin - FLOOR_W;
+    aiTower.originX = viewW - margin - FLOOR_W;
     aiTower.groundY = groundY;
     DF.Tower2.layoutTower(playerTower);
     DF.Tower2.layoutTower(aiTower);
@@ -194,9 +239,9 @@
     playerMuzzle = { x: playerTower.originX + FLOOR_W + MUZZLE_PAD, y: groundY - th * muzzleHeightFactor };
     aiMuzzle = { x: aiTower.originX - MUZZLE_PAD, y: groundY - th * muzzleHeightFactor };
 
-    const bw = 44, bh = 30, gap = 6;
+    const bw = 42, bh = 26, gap = 5;
     weaponButtons = DF.Weapons.ORDER.map(function (key, i) {
-      return { key: key, x: 16 + i * (bw + gap), y: canvas.height - 74, w: bw, h: bh };
+      return { key: key, x: 12 + i * (bw + gap), y: viewH - 30, w: bw, h: bh };
     });
   }
 
@@ -233,7 +278,7 @@
       if (DF.Tower2.findHitFloor(targetTower, sim.x, sim.y, DF.TowerProjectile2.RADIUS)) {
         return i * dt * 1000;
       }
-      if (sim.x < -50 || sim.x > canvas.width + 50 || sim.y > groundY + 50) return Infinity;
+      if (sim.x < -50 || sim.x > viewW + 50 || sim.y > groundY + 50) return Infinity;
     }
     return Infinity;
   }
@@ -270,7 +315,7 @@
       const targetTower = p.owner === 'player' ? aiTower : playerTower;
       const result = DF.TowerProjectile2.updateProjectileVsTower(p, dt, {
         gravity: GRAVITY, wind: wind, targetTower: targetTower,
-        bounds: { width: canvas.width, height: canvas.height }, groundY: groundY, refSize: FLOOR_H.torreta
+        bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
       });
       if (result.hit) {
         const now = performance.now();
@@ -617,13 +662,13 @@
     ctx.translate(sx, sy);
 
     ctx.fillStyle = '#1d120b';
-    ctx.fillRect(-20, -20, canvas.width + 40, canvas.height + 40);
+    ctx.fillRect(-20, -20, viewW + 40, viewH + 40);
     // Suelo neutro oscuro a propósito: despega las torres del cielo cálido.
     ctx.fillStyle = '#150f0b';
-    ctx.fillRect(-20, groundY, canvas.width + 40, canvas.height - groundY + 20);
-    ctx.strokeStyle = DF.TowerRender2.OUTLINE;
+    ctx.fillRect(-20, groundY, viewW + 40, viewH - groundY + 20);
+    ctx.strokeStyle = '#4a2a16';
     ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(-20, groundY); ctx.lineTo(canvas.width + 20, groundY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-20, groundY); ctx.lineTo(viewW + 20, groundY); ctx.stroke();
 
     DF.TowerRender2.drawTower(ctx, playerTower, now);
     DF.TowerRender2.drawTower(ctx, aiTower, now);
@@ -647,18 +692,24 @@
     }
     ctx.restore();
 
-    // HUD: sin shake, siempre legible.
-    DF.Render.drawEnergyBar(ctx, 16, canvas.height - 96, 140, 16, playerEnergy, 'Vos', 'left');
-    DF.Render.drawEnergyBar(ctx, canvas.width - 156, 18, 140, 16, aiEnergy, 'IA', 'right');
+    // HUD: sin shake, siempre legible. Todo vive en las dos bandas reservadas
+    // (HUD_TOP arriba, HUD_BOTTOM abajo) y nunca encima del mundo.
+    DF.Render.drawEnergyBar(ctx, 12, viewH - 48, 120, 12, playerEnergy, 'Vos', 'left');
+    // Corrida a la izquierda para no chocar con el boton HTML del panel de
+    // sesion, que vive arriba a la derecha fuera del canvas.
+    DF.Render.drawEnergyBar(ctx, viewW - 176, 20, 120, 12, aiEnergy, 'IA', 'right');
     drawWeaponButtons(ctx);
     drawWeaponInfo(ctx);
     drawMaterialLegend(ctx);
     drawWindIndicator(ctx);
     drawTimer(ctx, now);
+    drawRepairTip(ctx);
 
     if (state.phase === 'roundover') {
       const text = state.winner === 'player' ? 'Ganaste' : state.winner === 'ai' ? 'Ganó la IA' : 'Empate';
-      DF.Render.drawBanner(ctx, canvas, text, 'Toca para jugar de nuevo');
+      // drawBanner solo lee .width/.height -- se le pasa el viewport y no el
+      // canvas, porque el canvas ahora esta en pixeles fisicos (DPR).
+      DF.Render.drawBanner(ctx, { width: viewW, height: viewH }, text, 'Toca para jugar de nuevo');
     }
   }
 
@@ -684,43 +735,63 @@
   function drawWeaponInfo(ctx) {
     const w = DF.Weapons.WEAPONS[currentWeaponKey];
     const eff = DF.Weapons.effectivenessText(currentWeaponKey);
-    const x = weaponButtons.length ? weaponButtons[weaponButtons.length - 1].x + weaponButtons[weaponButtons.length - 1].w + 14 : 200;
-    const y = canvas.height - 74;
+    const last = weaponButtons[weaponButtons.length - 1];
+    const x = last ? last.x + last.w + 12 : 210;
     ctx.textAlign = 'left';
     ctx.fillStyle = DF.TowerRender2.UI.aim;
     ctx.font = 'bold 12px sans-serif';
-    ctx.fillText(w.label + ' · ' + w.cost + '⚡', x, y + 12);
-    ctx.fillStyle = '#c9bda8';
-    ctx.font = '11px sans-serif';
-    ctx.fillText(w.flavor, x, y + 26);
+    ctx.fillText(w.label + ' · ' + w.cost + '⚡', x, viewH - 38);
+    // El texto de sabor ("Generalista, arco medio") se cayo a proposito: en una
+    // banda de 60 px es la linea que menos informa, y la efectividad
+    // arma-vs-material es justo lo que el criterio B1 necesita que se lea.
     const parts = [eff.strong, eff.weak, eff.splash].filter(Boolean).join('   ');
     if (parts) {
       ctx.fillStyle = '#9fd6a0';
-      ctx.fillText(parts, x, y + 40);
+      ctx.font = '11px sans-serif';
+      ctx.fillText(parts, x, viewH - 23);
     }
     // Reparar comparte el mismo pool y la misma puerta de gasto (FR26): se
     // muestra al lado del arma, no en otra parte de la pantalla, justamente
     // para que se lea como la alternativa al tiro que es.
     ctx.fillStyle = DF.TowerRender2.UI.repair;
     ctx.font = '11px sans-serif';
-    ctx.fillText('Tocá un piso propio dañado para reparar · ' + REPAIR_COST + '⚡', x, y + 54);
+    ctx.fillText('Tocá un piso verde para reparar · ' + REPAIR_COST + '⚡', x, viewH - 8);
+  }
+
+  // Aviso de onboarding para reparar: solo en los dos primeros duelos y solo
+  // mientras haya algo reparable. Si el jugador no sabe que reparar existe, el
+  // criterio C1 mide desconocimiento en vez de balance -- pero dejarlo fijo en
+  // pantalla seria ruido para siempre.
+  function drawRepairTip(ctx) {
+    if (state.phase !== 'playing' || duelIndex > 2) return;
+    if (playerEnergy.value < REPAIR_COST) return;
+    if (!playerTower.floors.some(DF.Tower2.canRepair)) return;
+    ctx.fillStyle = DF.TowerRender2.UI.repair;
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Tocá un piso con borde verde para repararlo', viewW / 2, HUD_TOP + 22);
   }
 
   // Leyenda de materiales -- sin esto los colores de los muros son
   // decorativos y nadie sabe qué arma conviene contra cuál.
+  // Fila HORIZONTAL en la banda superior. Antes era una columna en x=16,y=60,
+  // que en celular horizontal caia justo encima de la torre del jugador.
   function drawMaterialLegend(ctx) {
-    const x0 = 16, y0 = 60;
+    const corto = viewW < 700;
+    let x = 12;
+    const y = 10;
     ctx.textAlign = 'left';
     ctx.font = '11px sans-serif';
-    DF.Weapons.MATERIALS.forEach(function (m, i) {
-      const y = y0 + i * 18;
+    DF.Weapons.MATERIALS.forEach(function (m) {
       ctx.fillStyle = DF.Weapons.MATERIAL_COLOR[m];
-      ctx.fillRect(x0, y, 14, 14);
+      ctx.fillRect(x, y, 12, 12);
       ctx.strokeStyle = 'rgba(255,255,255,0.4)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x0, y, 14, 14);
+      ctx.strokeRect(x, y, 12, 12);
+      const label = corto ? DF.Weapons.MATERIAL_LABEL[m].slice(0, 3) : DF.Weapons.MATERIAL_LABEL[m];
       ctx.fillStyle = '#c9bda8';
-      ctx.fillText(DF.Weapons.MATERIAL_LABEL[m], x0 + 20, y + 12);
+      ctx.fillText(label, x + 16, y + 10);
+      x += 16 + ctx.measureText(label).width + 12;
     });
   }
 
@@ -729,7 +800,7 @@
     ctx.fillStyle = '#c9bda8';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Viento ' + arrow + ' ' + Math.abs(wind).toFixed(0), canvas.width / 2, 26);
+    ctx.fillText('Viento ' + arrow + ' ' + Math.abs(wind).toFixed(0), viewW / 2, 18);
   }
 
   // Cuenta REGRESIVA, no cronómetro: si el jugador no ve cuánto falta, el
@@ -746,10 +817,10 @@
     ctx.fillStyle = left <= 30000 ? '#ff5a6e' : (escalando ? DF.TowerRender2.UI.aim : '#c9bda8');
     ctx.font = escalando ? 'bold 15px sans-serif' : '13px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(m + ':' + (s < 10 ? '0' : '') + s, canvas.width / 2, 46);
+    ctx.fillText(m + ':' + (s < 10 ? '0' : '') + s, viewW / 2, 36);
     if (escalando && state.phase === 'playing') {
       ctx.font = '10px sans-serif';
-      ctx.fillText('⚡ energía acelerada', canvas.width / 2, 60);
+      ctx.fillText('⚡ energía acelerada', viewW / 2, HUD_TOP + 8);
     }
   }
 
@@ -766,6 +837,14 @@
     setupInput();
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
+    // En mobile, mostrar/ocultar las barras del navegador cambia el area
+    // visible SIN disparar un `resize` de window. Sin esto, al colapsarse la
+    // barra el juego seguia dibujando contra el alto viejo y la banda inferior
+    // del HUD quedaba fuera de pantalla.
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onResize);
+      window.visualViewport.addEventListener('scroll', onResize);
+    }
     requestAnimationFrame(frame);
   }
 

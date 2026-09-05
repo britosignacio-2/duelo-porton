@@ -6,12 +6,18 @@
 <title>Duelo de Fortalezas — Portón de Retención</title>
 <style>
   html, body {
-    margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+    margin: 0; padding: 0; width: 100%; overflow: hidden;
+    /* 100dvh (dynamic viewport height) en vez de 100vh: en mobile, 100vh mide
+       la pantalla SIN descontar las barras del navegador, así que la parte de
+       abajo del juego quedaba dibujada debajo de la barra de navegación. */
+    height: 100vh; height: 100dvh;
     background: #1d120b; touch-action: none; overscroll-behavior: none;
     -webkit-user-select: none; user-select: none;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  /* El tamaño del canvas lo fija layout() en JS (necesita píxeles físicos por
+     devicePixelRatio); acá no se estira por CSS para no deformarlo. */
+  canvas { display: block; touch-action: none; }
 
   /* --- Pantalla de inicio de sesión (Portón de Retención, criterio A1) ---
      Se contesta ANTES de jugar. Si se preguntara después, la respuesta ya
@@ -57,8 +63,8 @@
 
   /* Botón discreto para abrir el panel de sesión durante el juego. */
   #log-btn {
-    position: fixed; top: 8px; right: 8px; z-index: 5;
-    width: 34px; height: 34px; border-radius: 17px;
+    position: fixed; top: 6px; right: 6px; z-index: 5;
+    width: 32px; height: 32px; border-radius: 16px;
     background: rgba(36,16,5,0.75); color: #9c8b76;
     border: 1px solid #5c4a38; font-size: 15px; cursor: pointer;
   }
