@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Duelo de Fortalezas — Portón de Retención</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+    background: #1d120b; touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+
+  /* --- Pantalla de inicio de sesión (Portón de Retención, criterio A1) ---
+     Se contesta ANTES de jugar. Si se preguntara después, la respuesta ya
+     estaría contaminada por cómo salió la sesión. */
+  .overlay {
+    position: fixed; inset: 0; z-index: 10;
+    background: #150f0b; color: #e8d7c3;
+    display: flex; align-items: center; justify-content: center;
+    overflow-y: auto; touch-action: auto;
+  }
+  .overlay[hidden] { display: none !important; }
+  .card {
+    width: min(520px, 92vw); padding: 22px 20px 26px;
+    background: #241005; border: 2px solid #d1521f; border-radius: 10px;
+    margin: 16px;
+  }
+  .card h1 { margin: 0 0 4px; font-size: 19px; color: #e8a23a; }
+  .card .sub { margin: 0 0 18px; font-size: 12px; color: #9c8b76; line-height: 1.45; }
+  .q { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+  .hint { margin: -4px 0 10px; font-size: 11px; color: #9c8b76; line-height: 1.4; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  button.opt, button.num {
+    flex: 1 1 auto; min-width: 44px; padding: 12px 10px;
+    background: transparent; color: #e8d7c3;
+    border: 2px solid #5c4a38; border-radius: 7px;
+    font-size: 13px; font-family: inherit; cursor: pointer;
+  }
+  button.num { flex: 0 0 auto; width: 46px; }
+  button.opt[aria-pressed="true"], button.num[aria-pressed="true"] {
+    background: #d1521f; border-color: #e8a23a; color: #fff; font-weight: 700;
+  }
+  button.go {
+    width: 100%; padding: 15px; margin-top: 4px;
+    background: #e8a23a; color: #241005; border: none; border-radius: 7px;
+    font-size: 16px; font-weight: 700; font-family: inherit; cursor: pointer;
+  }
+  button.go:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.ghost {
+    background: transparent; color: #9c8b76; border: 1px solid #5c4a38;
+    border-radius: 6px; padding: 9px 12px; font-size: 12px;
+    font-family: inherit; cursor: pointer;
+  }
+
+  /* Botón discreto para abrir el panel de sesión durante el juego. */
+  #log-btn {
+    position: fixed; top: 8px; right: 8px; z-index: 5;
+    width: 34px; height: 34px; border-radius: 17px;
+    background: rgba(36,16,5,0.75); color: #9c8b76;
+    border: 1px solid #5c4a38; font-size: 15px; cursor: pointer;
+  }
+  #log-btn[hidden] { display: none !important; }
+
+  pre.dump {
+    max-height: 34vh; overflow: auto; background: #150f0b; color: #9fd6a0;
+    border: 1px solid #5c4a38; border-radius: 6px; padding: 10px;
+    font-size: 11px; white-space: pre-wrap; word-break: break-all;
+    touch-action: auto; -webkit-user-select: text; user-select: text;
+  }
+  .warn {
+    border-left: 3px solid #ff5a6e; padding-left: 10px; margin-bottom: 14px;
+    font-size: 12px; color: #d9b7a8; line-height: 1.45;
+  }
+</style>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+<button id="log-btn" hidden aria-label="Panel de sesión">≡</button>
+
+<!-- Inicio de sesión: captura A1 (apertura espontánea), A4 (ganas antes) y
+     A2 (cuántos duelos te proponías) antes del primer disparo. -->
+<div class="overlay" id="start-overlay">
+  <div class="card">
+    <h1>Duelo de Fortalezas</h1>
+    <p class="sub">Portón de Retención · contestá honestamente, esto no se muestra a nadie.
+      Los tres datos de acá son la mitad del portón: si los contestás de memoria al final del día, no sirven.</p>
+
+    <p class="q">¿Por qué abriste el juego ahora?</p>
+    <p class="hint">Es el dato más importante de toda la prueba. "Porque el plan lo pedía" es una respuesta perfectamente válida y esperable.</p>
+    <div class="row" id="q-prompted">
+      <button class="opt" data-v="0" aria-pressed="false">Tenía ganas</button>
+      <button class="opt" data-v="1" aria-pressed="false">El plan lo pedía</button>
+    </div>
+
+    <p class="q">Ganas de jugar ahora mismo (1 = ninguna, 5 = muchas)</p>
+    <div class="row" id="q-ganas"></div>
+
+    <p class="q">¿Cuántos duelos te proponés jugar?</p>
+    <p class="hint">Sirve para detectar el "una más": no es un compromiso, es la línea de base contra la que se compara lo que jugaste de verdad.</p>
+    <div class="row" id="q-duelos"></div>
+
+    <button class="go" id="btn-start" disabled>Empezar</button>
+  </div>
+</div>
+
+<!-- Panel de sesión: cerrar la sesión, exportar el log, y (con advertencia)
+     ver el resumen contra los criterios. -->
+<div class="overlay" id="log-overlay" hidden>
+  <div class="card">
+    <h1>Sesión</h1>
+    <p class="sub">Cerrá la sesión cuando dejes de jugar, no cuando termines un duelo.</p>
+
+    <div id="end-block">
+      <p class="q">Ganas ahora, después de jugar (1-5)</p>
+      <div class="row" id="q-ganas-post"></div>
+      <button class="go" id="btn-end" disabled>Terminar sesión</button>
+    </div>
+    <p class="sub" id="ended-msg" hidden>Sesión cerrada. Ya podés cerrar la pestaña.</p>
+
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="btn-download">Descargar log</button>
+      <button class="ghost" id="btn-copy">Copiar</button>
+      <button class="ghost" id="btn-summary">Ver resumen</button>
+      <button class="ghost" id="btn-close">Volver</button>
+    </div>
+
+    <div id="summary-block" hidden>
+      <p class="warn">Mirar los números a mitad del portón cambia cómo jugás. Idealmente esto se abre recién al terminar el día 3.</p>
+      <pre class="dump" id="summary-dump"></pre>
+    </div>
+    <pre class="dump" id="copy-dump" hidden></pre>
+  </div>
+</div>
+
+<!--
+  Prototipo de validación de varianza (2026-09-05, ver
+  _bmad-output/planning-artifacts/gdds/gdd-Ideas-2026-09-02/critical-review-2026-09-03.md).
+  Prueba las 2 hipótesis más caras de esa auditoría, jugándolas, antes de
+  escribir épicas: (1) arma-vs-material + viento por ronda + gomera con
+  altura variable, en vez de trayectoria previsualizada -- hallazgo #1;
+  (2) sin núcleo, vida total ajustada + colapso final dramático como
+  presentación -- hallazgo #2.
+
+  Ampliado con las precondiciones P1-P4 del Portón de Retención
+  (_bmad-output/playtest-plan.md): reparar con cicatriz permanente,
+  interceptar con tell multimodal, timeout con escalada, y telemetría.
+
+  No toca tower-proto.html (el prototipo YA validado, con núcleo y
+  trayectoria previsualizada) ni ninguno de sus módulos -- reusa
+  energy.js/ai.js/input.js/render.js tal cual, y agrega duel2-*.js nuevos
+  para el modelo de torre sin núcleo + armas + materiales.
+-->
+<script src="js/projectile.js"></script>
+<script src="js/energy.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/input.js"></script>
+<script src="js/render.js"></script>
+<script src="js/duel2-telemetry.js"></script>
+<script src="js/duel2-sfx.js"></script>
+<script src="js/duel2-weapons.js"></script>
+<script src="js/duel2-tower.js"></script>
+<script src="js/duel2-projectile.js"></script>
+<script src="js/duel2-render.js"></script>
+<script src="js/duel2-main.js"></script>
+<script>
+(function (DF) {
+  'use strict';
+
+  const answers = { prompted: null, ganas: null, duelos: null, ganasPost: null };
+
+  function buildChoices(container, values, onPick) {
+    values.forEach(function (v) {
+      const b = document.createElement('button');
+      b.className = 'num';
+      b.textContent = v;
+      b.setAttribute('aria-pressed', 'false');
+      b.addEventListener('click', function () {
+        Array.prototype.forEach.call(container.children, function (c) {
+          c.setAttribute('aria-pressed', 'false');
+        });
+        b.setAttribute('aria-pressed', 'true');
+        onPick(v);
+      });
+      container.appendChild(b);
+    });
+  }
+
+  const startOverlay = document.getElementById('start-overlay');
+  const logOverlay = document.getElementById('log-overlay');
+  const logBtn = document.getElementById('log-btn');
+  const btnStart = document.getElementById('btn-start');
+  const btnEnd = document.getElementById('btn-end');
+
+  function refreshStart() {
+    btnStart.disabled = !(answers.prompted !== null && answers.ganas && answers.duelos);
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('#q-prompted .opt'), function (b) {
+    b.addEventListener('click', function () {
+      Array.prototype.forEach.call(b.parentNode.children, function (c) {
+        c.setAttribute('aria-pressed', 'false');
+      });
+      b.setAttribute('aria-pressed', 'true');
+      answers.prompted = b.dataset.v === '1';
+      refreshStart();
+    });
+  });
+
+  buildChoices(document.getElementById('q-ganas'), [1, 2, 3, 4, 5], function (v) {
+    answers.ganas = v; refreshStart();
+  });
+  buildChoices(document.getElementById('q-duelos'), [1, 2, 3, 4, 5], function (v) {
+    answers.duelos = v; refreshStart();
+  });
+  buildChoices(document.getElementById('q-ganas-post'), [1, 2, 3, 4, 5], function (v) {
+    answers.ganasPost = v; btnEnd.disabled = false;
+  });
+
+  btnStart.addEventListener('click', function () {
+    DF.Telemetry.startSession({
+      prompted: answers.prompted,
+      ganasAntes: answers.ganas,
+      duelosPropuestos: answers.duelos
+    });
+    startOverlay.hidden = true;
+    logBtn.hidden = false;
+    DF.Sfx.unlock(); // gesto real del usuario: habilita el audio del juego
+    DF.TowerMain2.start();
+  });
+
+  logBtn.addEventListener('click', function () { logOverlay.hidden = false; });
+  document.getElementById('btn-close').addEventListener('click', function () {
+    logOverlay.hidden = true;
+  });
+
+  btnEnd.addEventListener('click', function () {
+    DF.Telemetry.endSession({ ganasDespues: answers.ganasPost });
+    document.getElementById('end-block').hidden = true;
+    document.getElementById('ended-msg').hidden = false;
+  });
+
+  document.getElementById('btn-download').addEventListener('click', function () {
+    DF.Telemetry.download();
+  });
+
+  document.getElementById('btn-copy').addEventListener('click', function () {
+    const dump = document.getElementById('copy-dump');
+    DF.Telemetry.copyToClipboard().then(function () {
+      dump.hidden = false;
+      dump.textContent = 'Copiado al portapapeles.';
+    }).catch(function () {
+      // Sin clipboard API (http sin TLS en algunos navegadores): mostrar el
+      // JSON para copiarlo a mano en vez de fallar en silencio.
+      dump.hidden = false;
+      dump.textContent = DF.Telemetry.exportJson();
+    });
+  });
+
+  document.getElementById('btn-summary').addEventListener('click', function () {
+    const block = document.getElementById('summary-block');
+    block.hidden = !block.hidden;
+    if (!block.hidden) {
+      document.getElementById('summary-dump').textContent =
+        JSON.stringify(DF.Telemetry.summary(), null, 2);
+    }
+  });
+})(window.DF = window.DF || {});
+</script>
+</body>
+</html>
