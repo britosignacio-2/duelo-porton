@@ -1,50 +1,281 @@
-// duel2-render.js -- fork de tower-render.js para el prototipo de varianza
-// (2026-09-05). Cambios: color por MATERIAL en los muros (no un color de rol
-// fijo), sin caso especial de núcleo, un colapso final más dramático cuando la
-// torre entera queda destruida (hallazgo #2, presentación pura), y la flecha
-// de dirección/potencia que reemplaza la trayectoria punteada (hallazgo #1).
+// duel2-render.js -- dibujo del prototipo de varianza.
+//
+// REESCRITO 2026-09-06 con los hallazgos de feel de la iteracion 0:
+//
+//  - Los tres materiales eran el MISMO rectangulo pintado distinto. Ahora
+//    madera son tablones, metal es chapa remachada y piedra son bloques
+//    irregulares: la forma dice de que esta hecho, no solo el color.
+//  - La torre no se deformaba, solo se acortaba. Ahora cada piso se raja, se
+//    le rompen las esquinas y se inclina a medida que pierde vida. La silueta
+//    cambia con cada impacto, que es el Pilar 1 del GDD.
+//  - La gomera era un circulo flotante sin ficcion. Ahora es un objeto con
+//    horquilla y elastico que se estira, resiste y chasquea.
+//  - Todos los proyectiles se veian iguales. Ahora cada arquetipo tiene su
+//    estela: el cohete deja fuego, el mortero humo, el racimo chispas.
+//  - El espacio entre las torres estaba vacio. Ahora hay cerros de chatarra
+//    de fondo que dan profundidad sin interferir (sin colision: los
+//    obstaculos reales siguen siendo post-MVP).
 (function (DF) {
   'use strict';
 
-  const STATE_TINT = {
-    intacto: null,
-    rajado: 'rgba(0,0,0,0.18)',
-    humo: 'rgba(60,40,20,0.32)',
-    fuego: 'rgba(178,58,58,0.30)'
-  };
-
-  // Paleta "Atardecer de Deshuesadero" (ver duel2-weapons.js para los
-  // materiales). Naranja quemado = torretas, contorno único para todo.
+  // Paleta "Atardecer de Deshuesadero". Contorno unico para todo.
   const ROLE_COLOR = { torreta: '#d1521f' };
   const OUTLINE = '#241005';
 
   // Colores de UI -- deliberadamente FUERA de la paleta de materiales, para
-  // que nunca se confunda un elemento de interfaz con un muro (decisión de
-  // arte del 2026-09-05).
+  // que nunca se confunda un elemento de interfaz con un muro.
   const UI = {
-    aim: '#ffd23f',       // amarillo: apuntado / energía / selección
+    aim: '#ffd23f',
     aimBad: '#ff5a6e',
-    repair: '#5fd08a',    // verde: reparar
-    intercept: '#ffd23f'  // amarillo: proyectil interceptable
+    repair: '#5fd08a',
+    intercept: '#ffd23f'
   };
+
+  const CIELO = { alto: '#3a1d0e', bajo: '#7d3312' };
+
+  function sombra(hex, k) {
+    const r = Math.round(parseInt(hex.slice(1, 3), 16) * k);
+    const g = Math.round(parseInt(hex.slice(3, 5), 16) * k);
+    const b = Math.round(parseInt(hex.slice(5, 7), 16) * k);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+
+  // Ruido determinista por piso: la misma pieza tiene siempre las mismas
+  // vetas y las mismas roturas, cuadro a cuadro. Con Math.random() la textura
+  // hervia y parecia estatica de TV.
+  function rnd(semilla) {
+    const x = Math.sin(semilla * 12.9898) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  // Buffer reutilizado para pintar un piso antes de estamparlo. Uno solo para
+  // todos: los pisos comparten tamaño y se dibujan de a uno.
+  let _buf = null;
+  function bufferDePiso(w, h) {
+    const bw = Math.max(1, Math.ceil(w)), bh = Math.max(1, Math.ceil(h));
+    if (!_buf) _buf = document.createElement('canvas');
+    if (_buf.width !== bw || _buf.height !== bh) { _buf.width = bw; _buf.height = bh; }
+    return _buf;
+  }
 
   function ensureRenderY(floor) {
     if (floor.renderY === undefined) floor.renderY = floor.y;
+    if (floor.semilla === undefined) floor.semilla = Math.floor(Math.random() * 9999);
   }
 
   function updateRenderPositions(tower, dt) {
     for (const f of tower.floors) {
       if (!f.alive) continue;
       ensureRenderY(f);
-      const targetY = f.y;
-      const speed = 10;
-      f.renderY += (targetY - f.renderY) * Math.min(1, speed * dt);
+      f.renderY += (f.y - f.renderY) * Math.min(1, 10 * dt);
     }
   }
 
   function floorColor(floor) {
     if (floor.role === 'muro') return DF.Weapons.MATERIAL_COLOR[floor.material] || '#8a7a53';
     return ROLE_COLOR[floor.role] || '#8a7a53';
+  }
+
+  // --- Fondo ---------------------------------------------------------------
+
+  // Cerros de chatarra a dos profundidades. Sin colision: solo existen para
+  // que el hueco entre las torres deje de ser un vacio negro. El proyectil
+  // los cruza por delante.
+  function drawArena(ctx, viewW, viewH, groundY) {
+    const cielo = ctx.createLinearGradient(0, 0, 0, groundY);
+    cielo.addColorStop(0, CIELO.alto);
+    cielo.addColorStop(1, CIELO.bajo);
+    ctx.fillStyle = cielo;
+    ctx.fillRect(-20, -20, viewW + 40, groundY + 20);
+
+    // Sol bajo, detras de todo.
+    ctx.fillStyle = 'rgba(255, 190, 90, 0.16)';
+    ctx.beginPath();
+    ctx.arc(viewW * 0.5, groundY - viewH * 0.10, viewH * 0.30, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Dos cadenas de cerros: la de atras mas clara y mas chata.
+    [{ k: 0.30, alto: 0.16, semilla: 3 }, { k: 0.55, alto: 0.10, semilla: 11 }].forEach(function (capa) {
+      ctx.fillStyle = 'rgba(26, 14, 8, ' + capa.k + ')';
+      ctx.beginPath();
+      ctx.moveTo(-20, groundY);
+      const picos = 9;
+      for (let i = 0; i <= picos; i++) {
+        const x = -20 + ((viewW + 40) * i) / picos;
+        const h = viewH * capa.alto * (0.45 + rnd(capa.semilla + i) * 0.75);
+        ctx.lineTo(x, groundY - h);
+      }
+      ctx.lineTo(viewW + 20, groundY);
+      ctx.closePath();
+      ctx.fill();
+    });
+
+    ctx.fillStyle = '#150f0b';
+    ctx.fillRect(-20, groundY, viewW + 40, viewH - groundY + 20);
+    ctx.strokeStyle = '#4a2a16';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-20, groundY);
+    ctx.lineTo(viewW + 20, groundY);
+    ctx.stroke();
+  }
+
+  // --- Materiales ----------------------------------------------------------
+  // Cada material se dibuja con su propia FORMA, no solo su color: en pantalla
+  // chica la forma se lee antes que el tono, y arma-vs-material exige
+  // reconocer el material de un vistazo (FR8 / NFR12).
+
+  function pintarMadera(ctx, w, h, base, semilla) {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, w, h);
+    const tablones = 3;
+    for (let i = 0; i < tablones; i++) {
+      const y = (h / tablones) * i;
+      ctx.fillStyle = i % 2 ? sombra(base, 0.88) : base;
+      ctx.fillRect(0, y, w, h / tablones);
+      // Veta
+      ctx.strokeStyle = 'rgba(80,45,15,0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const vy = y + (h / tablones) * (0.3 + rnd(semilla + i) * 0.4);
+      ctx.moveTo(w * 0.1, vy);
+      ctx.lineTo(w * 0.9, vy);
+      ctx.stroke();
+      // Junta entre tablones
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+  }
+
+  function pintarMetal(ctx, w, h, base, semilla) {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, w, h);
+    // Brillo horizontal de chapa
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(255,255,255,0.16)');
+    g.addColorStop(0.45, 'rgba(255,255,255,0.03)');
+    g.addColorStop(0.55, 'rgba(0,0,0,0.10)');
+    g.addColorStop(1, 'rgba(0,0,0,0.22)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    // Remaches en las cuatro esquinas
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    [[0.14, 0.22], [0.86, 0.22], [0.14, 0.78], [0.86, 0.78]].forEach(function (pt) {
+      ctx.beginPath();
+      ctx.arc(w * pt[0], h * pt[1], Math.max(1.2, h * 0.055), 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(w * 0.5, 2);
+    ctx.lineTo(w * 0.5, h - 2);
+    ctx.stroke();
+  }
+
+  function pintarPiedra(ctx, w, h, base, semilla) {
+    ctx.fillStyle = sombra(base, 0.82);
+    ctx.fillRect(0, 0, w, h);
+    const filas = 2, cols = 3;
+    for (let r = 0; r < filas; r++) {
+      const desfase = r % 2 ? w / (cols * 2) : 0;
+      for (let c = -1; c <= cols; c++) {
+        const bx = desfase + (w / cols) * c;
+        const by = (h / filas) * r;
+        const bw = w / cols - 2;
+        const bh = h / filas - 2;
+        if (bx + bw < 0 || bx > w) continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, w, h);
+        ctx.clip();
+        const k = 0.86 + rnd(semilla + r * 7 + c * 3) * 0.28;
+        ctx.fillStyle = sombra(base, Math.min(1.05, k));
+        ctx.fillRect(bx + 1, by + 1, bw, bh);
+        ctx.strokeStyle = 'rgba(0,0,0,0.30)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx + 1, by + 1, bw, bh);
+        ctx.restore();
+      }
+    }
+  }
+
+  function pintarTorreta(ctx, w, h, base) {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, w, h);
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(255,255,255,0.14)');
+    g.addColorStop(1, 'rgba(0,0,0,0.24)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    // Ojo de buey de la torreta
+    ctx.fillStyle = '#233634';
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, Math.min(w, h) * 0.24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff3c4';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,243,196,0.4)';
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, Math.min(w, h) * 0.34, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // --- Daño ----------------------------------------------------------------
+  // El GDD dice que la variedad la genera la destruccion. Para que eso sea
+  // cierto, la SILUETA tiene que cambiar con cada impacto -- no alcanza con
+  // teñir el bloque, que era lo que pasaba antes.
+
+  function pintarRoturas(ctx, w, h, floor, nivel) {
+    // `nivel` 0..3 -- cuantas rajaduras y esquinas rotas.
+    const s = floor.semilla;
+    ctx.strokeStyle = 'rgba(0,0,0,0.62)';
+    ctx.lineCap = 'round';
+    for (let i = 0; i < nivel; i++) {
+      const x0 = w * (0.15 + rnd(s + i * 5) * 0.7);
+      ctx.lineWidth = 1.5 + rnd(s + i) * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x0, 0);
+      let x = x0;
+      for (let seg = 1; seg <= 3; seg++) {
+        x += (rnd(s + i * 3 + seg) - 0.5) * w * 0.35;
+        ctx.lineTo(x, (h / 3) * seg);
+      }
+      ctx.stroke();
+    }
+    // Esquinas arrancadas: se pintan del color del fondo, asi el bloque
+    // literalmente pierde material y la silueta se rompe.
+    if (nivel >= 2) {
+      const muescas = nivel - 1;
+      for (let i = 0; i < muescas; i++) {
+        const esq = Math.floor(rnd(s + 40 + i) * 4);
+        const mw = w * (0.16 + rnd(s + 50 + i) * 0.14);
+        const mh = h * (0.22 + rnd(s + 60 + i) * 0.2);
+        const mx = (esq % 2) ? w - mw : 0;
+        const my = (esq < 2) ? 0 : h - mh;
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx + mw, my + (esq < 2 ? mh : 0));
+        ctx.lineTo(mx + (esq % 2 ? 0 : mw), my + mh);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  function nivelDeRotura(floor) {
+    const pct = floor.hp / floor.maxHp;
+    if (pct >= 0.999) return 0;
+    if (pct > 0.60) return 1;
+    if (pct > 0.30) return 2;
+    return 3;
   }
 
   function drawFloor(ctx, tower, floor, nowMs) {
@@ -56,148 +287,134 @@
       collapseT = Math.min(1, (nowMs - floor.collapseStart) / DF.Tower2.DEFAULTS.collapseDurationMs);
     }
 
+    const w = floor.width, h = floor.height;
+    const nivel = nivelDeRotura(floor);
+
     ctx.save();
-    const cx = tower.originX + floor.width / 2;
-    const cy = floor.renderY + floor.height / 2;
-    ctx.translate(cx, cy);
+    ctx.translate(tower.originX + w / 2, floor.renderY + h / 2);
+
     if (collapseT > 0) {
-      ctx.translate(0, collapseT * floor.height * 0.9);
+      ctx.translate(0, collapseT * h * 0.9);
       ctx.rotate(collapseT * 0.35);
       ctx.globalAlpha = 1 - collapseT;
-      const s = 1 - collapseT * 0.3;
-      ctx.scale(s, s);
+      const k = 1 - collapseT * 0.3;
+      ctx.scale(k, k);
+    } else if (nivel >= 2) {
+      // Un piso muy dañado se asienta torcido. Chico a proposito: comunica
+      // inestabilidad sin romper la lectura de la columna.
+      const lado = rnd(floor.semilla) > 0.5 ? 1 : -1;
+      ctx.rotate(lado * 0.012 * (nivel - 1));
+      ctx.translate(lado * (nivel - 1), 0);
     }
-    ctx.translate(-floor.width / 2, -floor.height / 2);
 
-    ctx.fillStyle = floorColor(floor);
-    ctx.fillRect(1, 1, floor.width - 2, floor.height - 2);
-    ctx.strokeStyle = OUTLINE;
-    ctx.lineWidth = 2.5;
-    ctx.strokeRect(1, 1, floor.width - 2, floor.height - 2);
+    ctx.translate(-w / 2, -h / 2);
 
-    // Cicatriz permanente: la franja de arriba es la porción del piso que ya
-    // NO se puede recuperar reparando (repairCeiling bajó con cada impacto).
-    // Se dibuja como material arrancado -- el bloque se ve literalmente más
-    // corto de lo que era, que es exactamente lo que significa la mecánica.
-    const lostPct = 1 - Math.min(1, floor.repairCeiling / floor.maxHp);
-    if (lostPct > 0.001) {
-      const bandH = (floor.height - 2) * lostPct;
-      ctx.fillStyle = 'rgba(20,15,11,0.72)';
-      ctx.fillRect(1, 1, floor.width - 2, bandH);
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    // Cuerpo segun material. Se pinta en un buffer aparte y recien despues se
+    // estampa: las esquinas rotas se recortan con `destination-out`, que BORRA
+    // pixeles -- si se hiciera directo sobre el canvas principal agujerearia
+    // tambien el atardecer y los cerros que ya estan dibujados detras, y por el
+    // hueco se veria el fondo de la pagina en vez del cielo.
+    const base = floorColor(floor);
+    const buf = bufferDePiso(w, h);
+    const bctx = buf.getContext('2d');
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, buf.width, buf.height);
+    if (floor.role === 'torreta') pintarTorreta(bctx, w, h, base);
+    else if (floor.material === 'madera') pintarMadera(bctx, w, h, base, floor.semilla);
+    else if (floor.material === 'metal') pintarMetal(bctx, w, h, base, floor.semilla);
+    else pintarPiedra(bctx, w, h, base, floor.semilla);
+    if (nivel > 0) pintarRoturas(bctx, w, h, floor, nivel);
+    ctx.drawImage(buf, 0, 0, w, h, 0, 0, w, h);
+
+    // Cicatriz permanente: la franja de arriba es la porcion que ya NO se
+    // puede recuperar reparando. El bloque se ve literalmente mas corto.
+    const perdido = 1 - Math.min(1, floor.repairCeiling / floor.maxHp);
+    if (perdido > 0.001) {
+      const bandH = h * perdido;
+      ctx.fillStyle = 'rgba(20,15,11,0.78)';
+      ctx.fillRect(0, 0, w, bandH);
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(1, 1 + bandH);
-      ctx.lineTo(floor.width - 1, 1 + bandH);
+      ctx.moveTo(0, bandH);
+      ctx.lineTo(w, bandH);
       ctx.stroke();
     }
 
-    const state = DF.Tower2.damageState(floor);
-    const tint = STATE_TINT[state];
-    if (tint) {
-      ctx.fillStyle = tint;
-      ctx.fillRect(1, 1, floor.width - 2, floor.height - 2);
-    }
-    if (state === 'rajado' || state === 'humo' || state === 'fuego') {
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(floor.width * 0.25, floor.height * 0.15);
-      ctx.lineTo(floor.width * 0.5, floor.height * 0.55);
-      ctx.lineTo(floor.width * 0.35, floor.height * 0.85);
-      ctx.stroke();
-    }
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(1, 1, w - 2, h - 2);
 
-    // Flash blanco breve al recibir un impacto -- "juice" barato, se nota
-    // aunque el arte siga siendo un rectángulo (ver feedback del usuario
-    // 2026-09-05: sin esto no se puede juzgar nada jugando).
-    if (floor.hitFlashAt && nowMs - floor.hitFlashAt < 120) {
-      const fa = 1 - (nowMs - floor.hitFlashAt) / 120;
-      ctx.fillStyle = 'rgba(255,255,255,' + (fa * 0.75).toFixed(2) + ')';
-      ctx.fillRect(1, 1, floor.width - 2, floor.height - 2);
+    // Flash al recibir impacto, con intensidad segun lo bueno que fue el golpe.
+    if (floor.hitFlashAt && nowMs - floor.hitFlashAt < 140) {
+      const t = 1 - (nowMs - floor.hitFlashAt) / 140;
+      const fuerza = floor.hitFlashFuerza === undefined ? 0.5 : floor.hitFlashFuerza;
+      ctx.fillStyle = 'rgba(255,255,255,' + (t * (0.25 + fuerza * 0.6)).toFixed(2) + ')';
+      ctx.fillRect(0, 0, w, h);
     }
-
-    if (floor.role === 'torreta') {
-      ctx.fillStyle = '#233634';
-      ctx.beginPath();
-      ctx.arc(floor.width / 2, floor.height / 2, Math.min(floor.width, floor.height) * 0.22, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#fff3c4';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+    // Reparado: destello verde corto.
+    if (floor.repairFlashAt && nowMs - floor.repairFlashAt < 260) {
+      const t = 1 - (nowMs - floor.repairFlashAt) / 260;
+      ctx.strokeStyle = 'rgba(95,208,138,' + (t * 0.9).toFixed(2) + ')';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(1, 1, w - 2, h - 2);
     }
 
     ctx.restore();
 
-    if (state === 'humo' || state === 'fuego') {
-      drawSmoke(ctx, tower.originX + floor.width / 2, floor.renderY, nowMs, state === 'fuego');
+    const estado = DF.Tower2.damageState(floor);
+    if (estado === 'humo' || estado === 'fuego') {
+      drawSmoke(ctx, tower.originX + w / 2, floor.renderY, nowMs, estado === 'fuego');
     }
   }
 
-  function drawSmoke(ctx, x, y, nowMs, withFire) {
-    const n = 3;
-    for (let i = 0; i < n; i++) {
-      const phase = (nowMs / 900 + i / n) % 1;
+  function drawSmoke(ctx, x, y, nowMs, conFuego) {
+    for (let i = 0; i < 3; i++) {
+      const fase = (nowMs / 900 + i / 3) % 1;
       const px = x + Math.sin((nowMs / 400) + i) * 8;
-      const py = y - phase * 34;
-      const alpha = (1 - phase) * 0.5;
+      const py = y - fase * 34;
       ctx.beginPath();
-      ctx.fillStyle = 'rgba(80,80,80,' + alpha.toFixed(2) + ')';
-      ctx.arc(px, py, 5 + phase * 6, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(80,80,80,' + ((1 - fase) * 0.5).toFixed(2) + ')';
+      ctx.arc(px, py, 5 + fase * 6, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (withFire) {
-      const flick = 0.7 + 0.3 * Math.sin(nowMs / 90);
+    if (conFuego) {
+      const f = 0.7 + 0.3 * Math.sin(nowMs / 90);
       ctx.beginPath();
-      ctx.fillStyle = 'rgba(224,167,46,' + (0.8 * flick).toFixed(2) + ')';
-      ctx.arc(x, y + 2, 6 * flick, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(224,167,46,' + (0.8 * f).toFixed(2) + ')';
+      ctx.arc(x, y + 2, 6 * f, 0, Math.PI * 2);
       ctx.fill();
       ctx.beginPath();
-      ctx.fillStyle = 'rgba(178,58,58,' + (0.7 * flick).toFixed(2) + ')';
-      ctx.arc(x, y - 3, 4 * flick, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(178,58,58,' + (0.7 * f).toFixed(2) + ')';
+      ctx.arc(x, y - 3, 4 * f, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Colapso final dramático: onda expansiva + flash una sola vez, en la base de
-  // donde estaba la torre. Presentación pura (hallazgo #2) -- no es una regla
-  // nueva, no reintroduce el riesgo geométrico del núcleo (nada de esto es
-  // impactable, es solo dibujo).
   function drawFinalCollapse(ctx, tower, nowMs) {
     const t = (nowMs - tower.finalCollapseAt) / 1000;
-    if (t > 1) return;
-    const cx = tower.originX + 35;
-    const cy = tower.groundY;
+    if (t > 1.2) return;
+    const cx = tower.originX + 35, cy = tower.groundY;
     ctx.save();
-    // Flash blanco instantáneo, se apaga rápido -- el "golpe" del momento.
     if (t < 0.12) {
       ctx.fillStyle = 'rgba(255,255,255,' + (0.85 * (1 - t / 0.12)).toFixed(2) + ')';
       ctx.beginPath();
-      ctx.arc(cx, cy, 140, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 160, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Dos anillos de onda expansiva a velocidades distintas.
-    [0, 0.18].forEach(function (delay) {
-      const rt = Math.max(0, Math.min(1, (t - delay) / (1 - delay)));
+    [0, 0.18, 0.34].forEach(function (delay) {
+      const rt = Math.max(0, Math.min(1, (t - delay) / (1.2 - delay)));
       if (rt <= 0 || t < delay) return;
       ctx.globalAlpha = 1 - rt;
       ctx.strokeStyle = '#ffcf6b';
       ctx.lineWidth = 5 * (1 - rt) + 1;
       ctx.beginPath();
-      ctx.arc(cx, cy, 20 + rt * 150, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 20 + rt * 190, 0, Math.PI * 2);
       ctx.stroke();
     });
-    ctx.globalAlpha = 1 - t;
-    ctx.fillStyle = 'rgba(255, 150, 80, ' + (0.5 * (1 - t)).toFixed(2) + ')';
-    ctx.beginPath();
-    ctx.arc(cx, cy, 12 + t * 60, 0, Math.PI * 2);
-    ctx.fill();
     ctx.restore();
   }
 
-  // Partículas simples (escombros/chispas) -- círculos con gravedad liviana,
-  // se van desvaneciendo. r/g/b separados de la alpha para poder recalcularla
-  // cada frame según la vida restante.
   function drawParticles(ctx, particles) {
     particles.forEach(function (p) {
       const a = Math.max(0, p.life / p.maxLife);
@@ -209,55 +426,16 @@
   }
 
   function drawTower(ctx, tower, nowMs) {
-    for (let i = 0; i < tower.floors.length; i++) {
-      drawFloor(ctx, tower, tower.floors[i], nowMs);
-    }
-    if (tower.destroyed && tower.finalCollapseAt) {
-      drawFinalCollapse(ctx, tower, nowMs);
-    }
+    for (let i = 0; i < tower.floors.length; i++) drawFloor(ctx, tower, tower.floors[i], nowMs);
+    if (tower.destroyed && tower.finalCollapseAt) drawFinalCollapse(ctx, tower, nowMs);
   }
 
-  // Flecha de dirección/potencia -- reemplaza la trayectoria punteada
-  // (hallazgo #1: sacarla sin agregar varianza no sumaba nada; ahora se
-  // combina con arma-vs-material/viento/gomera variable, así que tiene
-  // sentido volver a sacarla y probar si el jugador la extraña o no).
-  function drawAimArrow(ctx, startX, startY, vx, vy, maxSpeed, ok) {
-    const speed = Math.hypot(vx, vy);
-    const len = 30 + Math.min(1, speed / maxSpeed) * 110;
-    const ang = Math.atan2(vy, vx);
-    const endX = startX + Math.cos(ang) * len;
-    const endY = startY + Math.sin(ang) * len;
-    ctx.strokeStyle = ok ? '#ffd23f' : '#ff5a6e';
-    ctx.fillStyle = ok ? '#ffd23f' : '#ff5a6e';
-    ctx.lineWidth = 7;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(startX, startY);
-    ctx.lineTo(endX, endY);
-    ctx.stroke();
-    const headLen = 16;
-    const headAng = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(endX, endY);
-    ctx.lineTo(endX - headLen * Math.cos(ang - headAng), endY - headLen * Math.sin(ang - headAng));
-    ctx.lineTo(endX - headLen * Math.cos(ang + headAng), endY - headLen * Math.sin(ang + headAng));
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  // Marca los pisos propios que se pueden reparar ahora mismo. Solo se dibuja
-  // sobre la torre del jugador: sin esto, reparar es una mecánica invisible y
-  // el criterio C1 del portón mediría "nadie sabía que existía" en vez de
-  // "reparar está mal balanceado".
-  // `vale` decide que pisos se marcan: no alcanza con que esten daniados, la
-  // reparacion tiene que devolver una cantidad util. Asi el borde verde deja de
-  // ofrecer un mal negocio en vez de tener que bloquearlo despues del toque.
   function drawRepairHints(ctx, tower, canAfford, nowMs, vale) {
     if (!canAfford) return;
-    const pulse = 0.45 + 0.35 * Math.sin(nowMs / 260);
+    const pulso = 0.45 + 0.35 * Math.sin(nowMs / 260);
     ctx.save();
     ctx.strokeStyle = UI.repair;
-    ctx.globalAlpha = pulse;
+    ctx.globalAlpha = pulso;
     ctx.lineWidth = 2.5;
     ctx.setLineDash([5, 4]);
     for (const f of tower.floors) {
@@ -268,26 +446,149 @@
     ctx.restore();
   }
 
-  // Proyectiles + tell de intercepción (P2). Un proyectil rival entra en
-  // ventana ~400 ms antes del impacto: cambia al amarillo de UI y le late un
-  // halo. El sonido lo dispara duel2-main una sola vez al entrar (acá no, esto
-  // se llama cada frame).
+  // --- Gomera --------------------------------------------------------------
+  // Antes era un circulo flotante sin ficcion: no habia nadie disparando, habia
+  // un cursor. Ahora es una horquilla con elastico que se estira y resiste, y
+  // el proyectil se ve cargado en la badana ANTES de salir. La mitad del placer
+  // de una gomera esta antes del disparo, no despues.
+
+  function drawSlingshot(ctx, muzzle, radioAgarre, arrastre, weapon, nowMs) {
+    const x = muzzle.x, y = muzzle.y;
+    const escala = 1;
+    const brazoY = 16 * escala, brazoX = 9 * escala;
+
+    // Retroceso: apenas suelta, la horquilla vibra un instante.
+    let sacudida = 0;
+    if (muzzle.disparoAt && nowMs - muzzle.disparoAt < 180) {
+      const t = 1 - (nowMs - muzzle.disparoAt) / 180;
+      sacudida = Math.sin((nowMs - muzzle.disparoAt) / 12) * 3 * t;
+    }
+
+    ctx.save();
+    ctx.translate(x + sacudida, y);
+
+    // Radio de agarre: apenas visible, solo para saber donde se puede empezar.
+    if (!arrastre) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath();
+      ctx.arc(0, 0, radioAgarre, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Poste
+    ctx.strokeStyle = '#6b4a2a';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 5 * escala;
+    ctx.beginPath();
+    ctx.moveTo(0, brazoY + 14 * escala);
+    ctx.lineTo(0, 0);
+    ctx.stroke();
+
+    // Horquilla
+    ctx.lineWidth = 4 * escala;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-brazoX, -brazoY);
+    ctx.moveTo(0, 0);
+    ctx.lineTo(brazoX, -brazoY);
+    ctx.stroke();
+
+    // Elastico. Sin arrastre queda flojo; con arrastre se estira hasta el dedo
+    // y se AFINA a medida que se tensa -- el grosor comunica la tension.
+    const anclaA = { x: -brazoX, y: -brazoY };
+    const anclaB = { x: brazoX, y: -brazoY };
+    let bolsa = { x: 0, y: -brazoY + 6 * escala };
+    let tension = 0;
+
+    if (arrastre) {
+      bolsa = { x: arrastre.dx, y: arrastre.dy };
+      tension = Math.min(1, arrastre.potencia);
+    }
+
+    ctx.strokeStyle = tension > 0 ? '#8a5a3a' : '#7a4f34';
+    ctx.lineWidth = Math.max(1.4, (3.2 - tension * 1.6)) * escala;
+    ctx.beginPath();
+    ctx.moveTo(anclaA.x, anclaA.y);
+    ctx.lineTo(bolsa.x, bolsa.y);
+    ctx.lineTo(anclaB.x, anclaB.y);
+    ctx.stroke();
+
+    // Proyectil cargado en la badana, del color de su arma.
+    if (arrastre && weapon) {
+      ctx.fillStyle = weapon.color || UI.aim;
+      ctx.beginPath();
+      ctx.arc(bolsa.x, bolsa.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = OUTLINE;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Chispas de tension cuando esta cerca del maximo.
+      if (tension > 0.75) {
+        const n = Math.round((tension - 0.75) * 12);
+        for (let i = 0; i < n; i++) {
+          const a = rnd(Math.floor(nowMs / 60) + i) * Math.PI * 2;
+          const d = 9 + rnd(Math.floor(nowMs / 60) + i * 3) * 7;
+          ctx.fillStyle = 'rgba(255,210,63,0.75)';
+          ctx.fillRect(bolsa.x + Math.cos(a) * d, bolsa.y + Math.sin(a) * d, 2, 2);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // --- Proyectiles ---------------------------------------------------------
+
+  const ESTELA = {
+    fuego: { r: 255, g: 140, b: 50, ancho: 5 },
+    humo: { r: 190, g: 180, b: 165, ancho: 4 },
+    chispa: { r: 255, g: 220, b: 120, ancho: 2.5 },
+    estela: { r: 255, g: 210, b: 63, ancho: 2 }
+  };
+
   function drawProjectiles(ctx, projectiles, nowMs) {
     projectiles.forEach(function (p) {
-      const r = DF.TowerProjectile2.RADIUS;
+      const w = DF.Weapons.WEAPONS[p.weaponKey];
+      const r = DF.TowerProjectile2.RADIUS * (p.esFragmento ? 0.7 : 1);
+
+      // Estela: dice de un vistazo que este proyectil NO vuela como los otros.
+      const tipo = ESTELA[w.trail];
+      if (tipo && p.estela && p.estela.length > 1) {
+        for (let i = 1; i < p.estela.length; i++) {
+          const a = (i / p.estela.length) * 0.55;
+          ctx.strokeStyle = 'rgba(' + tipo.r + ',' + tipo.g + ',' + tipo.b + ',' + a.toFixed(2) + ')';
+          ctx.lineWidth = tipo.ancho * (i / p.estela.length);
+          ctx.beginPath();
+          ctx.moveTo(p.estela[i - 1].x, p.estela[i - 1].y);
+          ctx.lineTo(p.estela[i].x, p.estela[i].y);
+          ctx.stroke();
+        }
+      }
+
+      // Llama del cohete mientras hay combustible.
+      if (p.kind === 'cohete' && p.ageMs < (w.thrustMs || 0)) {
+        const f = 0.7 + 0.3 * Math.sin(nowMs / 40);
+        ctx.fillStyle = 'rgba(255,180,60,' + (0.85 * f).toFixed(2) + ')';
+        ctx.beginPath();
+        ctx.arc(p.x - p.dirX * 9, p.y - p.dirY * 9, 5 * f, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       if (p.interceptable) {
-        const pulse = 0.5 + 0.5 * Math.sin(nowMs / 90);
+        const pulso = 0.5 + 0.5 * Math.sin(nowMs / 90);
         ctx.save();
-        ctx.globalAlpha = 0.35 + pulse * 0.45;
+        ctx.globalAlpha = 0.35 + pulso * 0.45;
         ctx.strokeStyle = UI.intercept;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 8 + pulse * 6, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r + 8 + pulso * 6, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
         ctx.fillStyle = UI.intercept;
       } else {
-        ctx.fillStyle = p.owner === 'player' ? '#f07a2d' : '#e8d7c3';
+        ctx.fillStyle = p.owner === 'player' ? (w.color || '#f07a2d') : '#e8d7c3';
       }
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -298,14 +599,81 @@
     });
   }
 
+  // Previsualizacion de trayectoria, SOLO para los arquetipos cuya fisica no
+  // es intuitiva (cohete, mortero, granada, racimo). La regla no es "todas o
+  // ninguna": se muestra lo que el sentido comun no te dice. Una piedra que
+  // cae la predice cualquiera; un cohete que acelera, no.
+  function drawPreview(ctx, puntos, ok) {
+    if (!puntos || puntos.length < 2) return;
+    ctx.save();
+    ctx.setLineDash([2, 7]);
+    ctx.strokeStyle = ok ? 'rgba(255,210,63,0.55)' : 'rgba(255,90,110,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(puntos[0].x, puntos[0].y);
+    for (let i = 1; i < puntos.length; i++) ctx.lineTo(puntos[i].x, puntos[i].y);
+    ctx.stroke();
+    ctx.restore();
+    const fin = puntos[puntos.length - 1];
+    ctx.fillStyle = ok ? 'rgba(255,210,63,0.7)' : 'rgba(255,90,110,0.7)';
+    ctx.beginPath();
+    ctx.arc(fin.x, fin.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawAimArrow(ctx, startX, startY, vx, vy, maxSpeed, ok) {
+    const speed = Math.hypot(vx, vy);
+    const len = 26 + Math.min(1, speed / maxSpeed) * 90;
+    const ang = Math.atan2(vy, vx);
+    const ex = startX + Math.cos(ang) * len, ey = startY + Math.sin(ang) * len;
+    ctx.strokeStyle = ok ? UI.aim : UI.aimBad;
+    ctx.fillStyle = ok ? UI.aim : UI.aimBad;
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - 14 * Math.cos(ang - 0.5), ey - 14 * Math.sin(ang - 0.5));
+    ctx.lineTo(ex - 14 * Math.cos(ang + 0.5), ey - 14 * Math.sin(ang + 0.5));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Marcas flotantes de impacto: dicen SI EL GOLPE FUE BUENO O MALO. Es el
+  // arreglo del hallazgo mas importante de la iteracion 0 -- pegarle 8 de daño
+  // y pegarle 37 se veian exactamente igual, y por eso se pudieron tirar 19
+  // disparos con el arma equivocada sin enterarse nunca.
+  function drawHitMarks(ctx, marcas, nowMs) {
+    marcas.forEach(function (m) {
+      const t = (nowMs - m.at) / m.duracion;
+      if (t > 1) return;
+      const subir = t * 26;
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.textAlign = 'center';
+      ctx.font = 'bold ' + (m.calidad > 0.66 ? 15 : m.calidad < 0.34 ? 11 : 13) + 'px sans-serif';
+      ctx.fillStyle = m.calidad > 0.66 ? '#9fe870' : m.calidad < 0.34 ? '#ff8b8b' : '#e8d7c3';
+      ctx.fillText(m.texto, m.x, m.y - subir);
+      ctx.restore();
+    });
+  }
+
   DF.TowerRender2 = {
     UI: UI,
     OUTLINE: OUTLINE,
     updateRenderPositions: updateRenderPositions,
+    drawArena: drawArena,
     drawTower: drawTower,
     drawAimArrow: drawAimArrow,
+    drawPreview: drawPreview,
     drawParticles: drawParticles,
     drawRepairHints: drawRepairHints,
-    drawProjectiles: drawProjectiles
+    drawProjectiles: drawProjectiles,
+    drawSlingshot: drawSlingshot,
+    drawHitMarks: drawHitMarks,
+    nivelDeRotura: nivelDeRotura
   };
 })(window.DF = window.DF || {});

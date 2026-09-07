@@ -1,66 +1,169 @@
-// duel2-weapons.js -- catalogo de armas y matriz arma-vs-material del prototipo
-// de validacion de varianza (2026-09-05). Nace de critical-review-2026-09-03.md,
-// hallazgo #1 ("el tiro correcto es UNO y se memoriza") -- inspirado en Angry
-// Birds (cada pajaro fuerte contra un material) y Worms (potencia/trayectoria
-// por arma). Ver critical-review para el detalle de la discusion.
+// duel2-weapons.js -- catalogo de armas del prototipo de varianza.
 //
-// Ask First (spec): TODOS los numeros de acá son hipotesis a ajustar jugando,
-// no un balance final.
+// REESCRITO 2026-09-06 tras el diagnostico de la iteracion 0. El log mostro
+// que el jugador uso "rapido" en 19 disparos seguidos contra una torre de
+// PIEDRA, donde era la peor opcion posible -- y gano comodo. Diagnostico:
+//
+//   Las cuatro armas viejas hacian todas LO MISMO (volar un arco balistico) y
+//   se diferenciaban solo en escalares: velocidad, daño, costo, multiplicador
+//   por material. Una diferencia escalar la resuelve la aritmetica: el jugador
+//   encuentra el numero que le conviene y DEJA DE ELEGIR. Encima, como fallar
+//   es la norma (65% de acierto), el arma barata ganaba por otra via -- un
+//   fallo costaba 16 en vez de 55, asi que la cantidad de intentos valia mas
+//   que el daño por intento.
+//
+// La respuesta son arquetipos de MOVIMIENTO, no de numero. Un arma que llega a
+// donde las otras no llegan no es "mejor": es otra herramienta. Y de paso
+// resuelve dos agujeros viejos:
+//   - critical-review §1.4 ("los muros no protegen nada"): si cada arma alcanza
+//     una parte distinta de la torre, el ORDEN vertical de los materiales pasa
+//     a ser una decision real, que es lo que le falta a la Epica 6.
+//   - criterio C4 (interceptar casi no se uso): un cohete lento y visible es la
+//     presa natural del gesto de interceptar.
+//
+// Dos cambios estructurales que vienen con esto:
+//   1. `cooldownMs` -- la cadencia se separa del costo. Antes el costo hacia
+//      dos trabajos (presupuesto de poder Y limitador de ritmo) y por eso el
+//      arma barata se podia spamear. Ahora cada arma tiene su propio ritmo.
+//   2. Matriz de materiales aplanada a 0.75-1.35 (venia de 0.55-1.7). El eje
+//      principal de decision pasa a ser el movimiento; el material es el
+//      desempate, no al reves. Menos superficie de balance duplicada.
+//
+// Ask First (spec): TODOS los numeros de aca son hipotesis a ajustar jugando.
 (function (DF) {
   'use strict';
 
   const MATERIALS = ['madera', 'metal', 'piedra'];
 
-  // Paleta "Atardecer de Deshuesadero" (dirección de arte cerrada 2026-09-05,
-  // ver design-mockups/direccion-arte-final.html). Cada color está atado a UN
-  // material a propósito: arma-vs-material solo funciona si el jugador
-  // reconoce el material de un vistazo en pantalla chica (FR8 / NFR12).
-  // Los colores de UI (amarillo de apuntado, verde de reparar, naranja de
-  // proyectil) están deliberadamente FUERA de esta paleta, para que nunca se
-  // confunda un elemento de interfaz con un material.
+  // Paleta "Atardecer de Deshuesadero" (direccion de arte cerrada 2026-09-05,
+  // ver design-mockups/direccion-arte-final.html). Cada color esta atado a UN
+  // material a proposito: el jugador tiene que reconocerlo de un vistazo en
+  // pantalla chica (FR8 / NFR12). Los colores de UI estan deliberadamente
+  // FUERA de esta paleta.
   const MATERIAL_COLOR = {
     madera: '#e8a23a', // dorado
-    metal: '#3f7a6e',  // verde pátina
+    metal: '#3f7a6e',  // verde patina
     piedra: '#9c2b2b'  // rojo ladrillo
   };
 
-  const MATERIAL_LABEL = {
-    madera: 'Madera',
-    metal: 'Metal',
-    piedra: 'Piedra'
+  const MATERIAL_LABEL = { madera: 'Madera', metal: 'Metal', piedra: 'Piedra' };
+
+  // Cuanto "aguanta" visual y sonoramente cada material al ser golpeado.
+  // Alimenta el feedback de impacto: madera astilla y suena seco, metal
+  // resuena, piedra estalla en polvo.
+  const MATERIAL_FEEL = {
+    madera: { pitch: 1.25, resonancia: 0.10, particulas: 1.2 },
+    metal:  { pitch: 1.75, resonancia: 0.55, particulas: 0.8 },
+    piedra: { pitch: 0.80, resonancia: 0.05, particulas: 1.5 }
   };
 
-  // speedMul escala la velocidad que sale del arrastre (mismo gesto, distinto
-  // resultado) -- así "lento y arco alto" / "veloz y arco bajo" no necesitan
-  // un sistema de apuntado nuevo, solo cambian cuánto empuja el mismo arrastre.
+  // --- Arquetipos de movimiento -------------------------------------------
+  //
+  // `kind` es lo que duel2-projectile.js usa para integrar distinto. Es el eje
+  // real de diferenciacion; todo lo demas es ajuste.
+  //
+  //   balistico -- arco de toda la vida, gravedad y nada mas.
+  //   cohete    -- sale lento y ACELERA en la direccion del disparo; el arco
+  //                se endereza. Llega a los pisos altos.
+  //   mortero   -- sube muchisimo y cae casi a plomo. Pega desde arriba.
+  //   rebote    -- pica en el suelo antes de explotar. Llega a la base.
+  //   perfora   -- atraviesa el primer piso y daña el de atras.
+  //   racimo    -- en el punto mas alto se parte en tres.
+  //
+  // `preview` marca las armas cuya trayectoria NO es intuitiva. La regla no es
+  // "todas o ninguna": se muestra lo que la fisica de sentido comun no te dice.
+  // Una piedra que cae la predice cualquiera; un cohete que acelera, no.
   const WEAPONS = {
-    estandar: {
-      label: 'Estándar', short: 'EST', key: '1', flavor: 'Generalista, arco medio',
-      speedMul: 1.0, cost: 34, baseDamage: 18, splash: false,
+    piedra: {
+      label: 'Piedra', short: 'PIE', key: '1',
+      flavor: 'Arco de toda la vida. Predecible.',
+      rol: 'La referencia: sin sorpresas, sirve para todo y no brilla en nada.',
+      kind: 'balistico',
+      speedMul: 1.0, cost: 26, baseDamage: 18, cooldownMs: 600,
+      splash: false, preview: false,
+      color: '#e8d7c3', trail: 'none',
       materialMul: { madera: 1.0, metal: 1.0, piedra: 1.0 },
       turretBonus: 1.0
     },
-    precision: {
-      label: 'Precisión', short: 'PRE', key: '2', flavor: 'Rápido y plano, barato',
-      speedMul: 1.2, cost: 22, baseDamage: 14, splash: false,
-      materialMul: { madera: 1.0, metal: 1.0, piedra: 1.0 },
-      turretBonus: 1.6 // fuerte contra torretas expuestas -- "snipear" del GDD
-    },
-    pesado: {
-      label: 'Pesado', short: 'PES', key: '3', flavor: 'Lento, arco alto, caro -- splash',
-      speedMul: 0.62, cost: 55, baseDamage: 22, splash: true,
-      materialMul: { madera: 1.0, metal: 1.7, piedra: 1.7 },
+
+    cohete: {
+      label: 'Cohete', short: 'COH', key: '2',
+      flavor: 'Sale lento y acelera. El arco se endereza.',
+      rol: 'Los pisos ALTOS: es el unico que no cae mientras cruza.',
+      kind: 'cohete',
+      speedMul: 0.45, cost: 38, baseDamage: 24, cooldownMs: 1400,
+      splash: false, preview: true,
+      // Empuje sostenido en la direccion inicial. La gravedad lo dobla al
+      // principio, el empuje lo endereza despues.
+      thrust: 1800, thrustMs: 750,
+      // Mas afectado por el viento que nadie: lento y con superficie. Es a
+      // proposito -- si fuera inmune al viento seria el arma sin desventaja y
+      // volveriamos al problema de "rapido" con otro nombre.
+      windMul: 1.6,
+      color: '#ff8b3d', trail: 'fuego',
+      materialMul: { madera: 0.80, metal: 1.35, piedra: 1.15 },
       turretBonus: 1.0
     },
-    rapido: {
-      label: 'Rápido', short: 'RAP', key: '4', flavor: 'Veloz, arco bajo, muy barato',
-      speedMul: 1.4, cost: 16, baseDamage: 12, splash: false,
-      materialMul: { madera: 1.7, metal: 0.55, piedra: 0.7 },
+
+    mortero: {
+      label: 'Mortero', short: 'MOR', key: '3',
+      flavor: 'Sube muchisimo y cae a plomo.',
+      rol: 'Pega DESDE ARRIBA, ignorando la silueta de la torre.',
+      kind: 'mortero',
+      speedMul: 0.9, cost: 34, baseDamage: 22, cooldownMs: 1600,
+      splash: true, preview: true,
+      // Reparte el arrastre: mucho hacia arriba, poco hacia adelante.
+      arcoVertical: 1.5, arcoHorizontal: 0.6, gravedadCaida: 1.3,
+      windMul: 1.2,
+      color: '#c9bda8', trail: 'humo',
+      materialMul: { madera: 1.20, metal: 0.80, piedra: 1.35 },
+      turretBonus: 1.0
+    },
+
+    granada: {
+      label: 'Granada', short: 'GRA', key: '4',
+      flavor: 'Pica en el suelo antes de estallar.',
+      rol: 'La BASE de la torre, con un tiro rasante y barato.',
+      kind: 'rebote',
+      speedMul: 1.1, cost: 24, baseDamage: 16, cooldownMs: 900,
+      splash: true, preview: true,
+      rebotes: 2, reboteVertical: 0.55, reboteHorizontal: 0.8,
+      windMul: 1.0,
+      color: '#5fd08a', trail: 'chispa',
+      materialMul: { madera: 1.35, metal: 0.80, piedra: 0.85 },
+      turretBonus: 1.0
+    },
+
+    perforador: {
+      label: 'Perforador', short: 'PER', key: '5',
+      flavor: 'No explota en el primero: lo atraviesa.',
+      rol: 'Hace que el ORDEN importe: si ponés blando adelante, regalás el paso.',
+      kind: 'perfora',
+      speedMul: 1.3, cost: 40, baseDamage: 20, cooldownMs: 1800,
+      splash: false, preview: false,
+      pisosQueAtraviesa: 2, dañoAlSegundo: 0.55,
+      windMul: 0.7, // tenso y rapido: el viento casi no lo dobla
+      color: '#ffd23f', trail: 'estela',
+      materialMul: { madera: 1.30, metal: 1.10, piedra: 0.75 },
+      turretBonus: 1.3
+    },
+
+    racimo: {
+      label: 'Racimo', short: 'RAC', key: '6',
+      flavor: 'En el punto mas alto se parte en tres.',
+      rol: 'Cobertura ancha cuando no sabés dónde va a quedar la torre.',
+      kind: 'racimo',
+      speedMul: 0.9, cost: 36, baseDamage: 10, cooldownMs: 1600,
+      splash: false, preview: true,
+      fragmentos: 3, dispersion: 0.35,
+      windMul: 1.3,
+      color: '#d98cff', trail: 'chispa',
+      materialMul: { madera: 1.25, metal: 0.85, piedra: 0.80 },
       turretBonus: 1.0
     }
   };
 
-  const ORDER = ['estandar', 'precision', 'pesado', 'rapido'];
+  const ORDER = ['piedra', 'cohete', 'mortero', 'granada', 'perforador', 'racimo'];
 
   function computeDamage(weaponKey, floor) {
     const w = WEAPONS[weaponKey];
@@ -70,20 +173,59 @@
     return dmg;
   }
 
-  // Arma con mejor multiplicador contra el material de ese piso -- usada por
-  // la IA para que el sistema también se note "del otro lado" (ver hallazgo #1).
+  // Cuan bueno fue ESTE impacto comparado con el mejor y el peor posible de
+  // esa misma arma. Es el numero que alimenta el feedback: sin esto, pegarle
+  // 8 de daño y pegarle 37 se ven exactamente igual en pantalla, y el jugador
+  // puede tirar 19 veces con el arma equivocada sin enterarse nunca.
+  // Devuelve 0 (el peor matchup posible) a 1 (el mejor).
+  function matchupQuality(weaponKey, floor) {
+    const w = WEAPONS[weaponKey];
+    const muls = MATERIALS.map(function (m) { return w.materialMul[m]; }).concat([w.turretBonus]);
+    const min = Math.min.apply(null, muls);
+    const max = Math.max.apply(null, muls);
+    let actual = 1.0;
+    if (floor.role === 'muro' && floor.material) actual = w.materialMul[floor.material] || 1.0;
+    else if (floor.role === 'torreta') actual = w.turretBonus;
+    if (max - min < 0.001) return 0.5; // arma neutra (la piedra): ni bien ni mal
+    return Math.max(0, Math.min(1, (actual - min) / (max - min)));
+  }
+
+  // Cuanta diferencia REAL hay entre el mejor y el peor matchup de un arma.
+  // `matchupQuality` normaliza contra el rango de cada arma, asi que una
+  // diferencia de 17% se veria igual de dramatica que una de 70%. Sin esta
+  // puerta, el juego gritaria "arma equivocada" cuando en realidad estas
+  // haciendo el 83% del daño maximo -- y un jugador que lo nota deja de
+  // creerle al feedback, que es exactamente lo que vinimos a arreglar.
+  function matchupSpread(weaponKey) {
+    const w = WEAPONS[weaponKey];
+    const muls = MATERIALS.map(function (m) { return w.materialMul[m]; });
+    const min = Math.min.apply(null, muls);
+    const max = Math.max.apply(null, muls);
+    return max <= 0 ? 0 : (max - min) / max;
+  }
+
+  // Umbral debajo del cual el arma no tiene identidad de material y el juego
+  // muestra el numero de daño en vez de un juicio.
+  const SPREAD_MINIMO = 0.25;
+
+  function daSenalDeMatchup(weaponKey) {
+    return matchupSpread(weaponKey) >= SPREAD_MINIMO;
+  }
+
+  // Arma con mejor multiplicador contra el material de ese piso -- la usa la IA
+  // para que el sistema tambien se note "del otro lado".
   function bestWeaponAgainst(floor) {
-    if (floor.role === 'torreta') return 'precision';
-    let best = 'estandar', bestMul = 1.0;
+    let best = 'piedra', bestMul = -Infinity;
     ORDER.forEach(function (k) {
-      const mul = WEAPONS[k].materialMul[floor.material] || 1.0;
+      const w = WEAPONS[k];
+      const mul = floor.role === 'torreta'
+        ? w.turretBonus
+        : (w.materialMul[floor.material] || 1.0);
       if (mul > bestMul) { bestMul = mul; best = k; }
     });
     return best;
   }
 
-  // Texto legible de a qué le pega mejor/peor cada arma -- el usuario marcó
-  // que el selector no explicaba nada, esto alimenta el panel de info.
   function effectivenessText(key) {
     const w = WEAPONS[key];
     const strong = [], weak = [];
@@ -94,9 +236,9 @@
     });
     if (w.turretBonus > 1.05) strong.push('Torretas');
     return {
-      strong: strong.length ? '+ contra ' + strong.join('/') : null,
-      weak: weak.length ? '- contra ' + weak.join('/') : null,
-      splash: w.splash ? 'Daña pisos vecinos' : null
+      strong: strong.length ? '+ ' + strong.join('/') : null,
+      weak: weak.length ? '- ' + weak.join('/') : null,
+      splash: w.splash ? 'Daña vecinos' : null
     };
   }
 
@@ -104,9 +246,13 @@
     MATERIALS: MATERIALS,
     MATERIAL_COLOR: MATERIAL_COLOR,
     MATERIAL_LABEL: MATERIAL_LABEL,
+    MATERIAL_FEEL: MATERIAL_FEEL,
     WEAPONS: WEAPONS,
     ORDER: ORDER,
     computeDamage: computeDamage,
+    matchupQuality: matchupQuality,
+    matchupSpread: matchupSpread,
+    daSenalDeMatchup: daSenalDeMatchup,
     bestWeaponAgainst: bestWeaponAgainst,
     effectivenessText: effectivenessText
   };
