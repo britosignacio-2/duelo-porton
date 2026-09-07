@@ -118,6 +118,13 @@
   // ultimo log): habia que subirle el error, no bajarle la punteria. Este es
   // el parametro que FR35 va a exponer como niveles de dificultad.
   const aiController = DF.AI.createAI({ angleErrorMax: 0.30, speedErrorRatio: 0.22 });
+  // Registro de disparos: un gatillo, un evento. Ver duel2-shotlog.js.
+  const shotLog = DF.ShotLog.createShotLog({
+    log: function (type, data) { DF.Telemetry.log(type, data); },
+    duelIndex: function () { return duelIndex; },
+    pisoIndex: function (floor) { return aiTower.floors.indexOf(floor); },
+    weaponInfo: function (key) { return DF.Weapons.WEAPONS[key]; }
+  });
   const state = { phase: 'playing', winner: null, roundoverAt: 0 };
   let input = null;
   let lastT = null;
@@ -290,9 +297,13 @@
   }
 
   function spawnProjectile(x, y, vx, vy, owner, weaponKey) {
-    projectiles.push(DF.TowerProjectile2.createProjectile({
+    const p = DF.TowerProjectile2.createProjectile({
       x: x, y: y, vx: vx, vy: vy, owner: owner, weaponKey: weaponKey
-    }));
+    });
+    // Un gatillo abre UN registro. Ver duel2-shotlog.js: antes se logueaba por
+    // impacto y el perforador escribia dos disparos por tiro.
+    p.shotId = shotLog.abrir(owner, weaponKey);
+    projectiles.push(p);
   }
 
   function puedePagar(energy, weaponKey) {
@@ -397,52 +408,31 @@
         const now = performance.now();
         p.golpeNumero = r.golpeNumero;
         const res = resolverImpacto(p, r.floor, targetTower, now);
-        if (p.owner === 'player') logShot(p.weaponKey, true, r.floor, res.calidad);
-        else logAiShot(p.weaponKey, true, r.floor);
-        if (!r.sigue) projectiles.splice(i, 1);
+        shotLog.impacto(p.shotId, r.floor, res.calidad);
+        // El perforador SIGUE volando hacia el piso de atras: el disparo
+        // todavia no termino, y por eso no se cierra el registro aca.
+        if (!r.sigue) { shotLog.cerrarUno(p.shotId); projectiles.splice(i, 1); }
       } else if (r.rebote) {
         DF.Sfx.playBounce();
         spawnImpactParticles(r.x, r.y, { r: 120, g: 100, b: 80 }, 5, 0.3);
       } else if (r.divide) {
         DF.Sfx.playSplit();
-        DF.TowerProjectile2.splitCluster(p).forEach(function (f) { nuevos.push(f); });
+        const frags = DF.TowerProjectile2.splitCluster(p);
+        // Los fragmentos son el MISMO disparo: heredan el registro en vez de
+        // abrir uno nuevo (o de desaparecer del log, que es lo que pasaba).
+        frags.forEach(function (f) { f.shotId = p.shotId; nuevos.push(f); });
+        shotLog.dividir(p.shotId, frags.length);
         projectiles.splice(i, 1);
       } else if (r.outOfBounds) {
         if (r.explotaEnSuelo) {
           spawnImpactParticles(r.x, r.y, { r: 120, g: 100, b: 80 }, 8, 0.4);
           DF.Sfx.playBounce();
         }
-        if (!p.esFragmento) {
-          if (p.owner === 'player') logShot(p.weaponKey, false, null, null);
-          else logAiShot(p.weaponKey, false, null);
-        }
+        shotLog.cerrarUno(p.shotId);
         projectiles.splice(i, 1);
       }
     }
     nuevos.forEach(function (f) { projectiles.push(f); });
-  }
-
-  function logShot(weaponKey, hit, floor, calidad) {
-    DF.Telemetry.log('shot', {
-      duelIndex: duelIndex,
-      weapon: weaponKey,
-      kind: DF.Weapons.WEAPONS[weaponKey].kind,
-      costo: DF.Weapons.WEAPONS[weaponKey].cost,
-      hit: hit,
-      materialObjetivo: floor ? (floor.material || floor.role) : null,
-      pisoImpactado: floor ? aiTower.floors.indexOf(floor) : null,
-      // Calidad del matchup 0..1. Es el dato que dice si el jugador ESTA
-      // ELIGIENDO bien el arma, no solo si acerto.
-      calidad: (calidad === null || calidad === undefined) ? null : +calidad.toFixed(2)
-    });
-  }
-
-  function logAiShot(weaponKey, hit, floor) {
-    DF.Telemetry.log('ai_shot', {
-      duelIndex: duelIndex, weapon: weaponKey,
-      costo: DF.Weapons.WEAPONS[weaponKey].cost, hit: hit,
-      materialObjetivo: floor ? (floor.material || floor.role) : null
-    });
   }
 
   // Apuntado de la IA POR SIMULACION, no por formula.
@@ -542,6 +532,9 @@
     state.phase = 'roundover';
     state.winner = winner;
     state.roundoverAt = performance.now();
+    // Antes de vaciar el aire: los disparos en vuelo existieron como gatillo y
+    // se emiten con lo que tengan. Tirarlos sesgaria la punteria a la baja.
+    shotLog.cerrarTodos();
     projectiles = [];
     aiPending = null;
     DF.Sfx.playOutcome(winner === 'player');
@@ -582,6 +575,9 @@
   }
 
   function resetGame() {
+    // Red de seguridad: si algo quedo abierto, se emite ANTES de rearmar las
+    // torres -- despues, `pisoImpactado` apuntaria a una torre que ya no existe.
+    shotLog.cerrarTodos();
     wind = (Math.random() * 2 - 1) * WIND_MAX;
     muzzleHeightFactor = MUZZLE_HEIGHT_MIN + Math.random() * (MUZZLE_HEIGHT_MAX - MUZZLE_HEIGHT_MIN);
     buildTowers();
@@ -640,6 +636,7 @@
       DF.Sfx.playIntercept();
       triggerShake(5);
       hitMarks.push({ x: best.x, y: best.y, at: performance.now(), duracion: 700, calidad: 1, texto: '¡AL VUELO!' });
+      shotLog.cerrarUno(best.shotId, { interceptado: true });
       projectiles.splice(projectiles.indexOf(best), 1);
     }
     return true;
@@ -694,6 +691,7 @@
     DF.Sfx.playIntercept();
     triggerShake(6);
     hitMarks.push({ x: p.x, y: p.y, at: performance.now(), duracion: 700, calidad: 1, texto: '¡AL VUELO!' });
+    shotLog.cerrarUno(p.shotId, { interceptado: true });
     projectiles.splice(projectiles.indexOf(p), 1);
   }
 
