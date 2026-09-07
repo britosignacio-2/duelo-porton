@@ -105,7 +105,18 @@
   const MUZZLE_HEIGHT_MAX = 0.78;
 
   const REPAIR_COST = 34;
-  const REPAIR_AMOUNT = 14;
+  // Subido de 14 (it.8). Medido en `tools/banco/duelo-completo.js`: 34 de
+  // energia compraban 14 de vida, contra ~25 de daño si en vez de reparar
+  // disparabas. O sea que **reparar era siempre el peor negocio**, para los
+  // dos lados -- el Pilar 3 del GDD estaba de adorno, y el jugador que
+  // reparaba se estaba haciendo un mal favor sin enterarse.
+  //
+  // Se barrio el punto de equilibrio: con 14 de curacion, que la IA repare le
+  // baja las victorias de 40% a 21%; con 22, de 32% a 19-23%; con 30, de 29%
+  // a 32% -- ahi recien deja de ser autolesion. El tope de cicatriz (-15% del
+  // techo por impacto) sigue siendo el freno, asi que curar mas no vuelve
+  // inmortal a nadie: vuelve la decision real.
+  const REPAIR_AMOUNT = 30;
   const REPAIR_MIN_USEFUL = REPAIR_AMOUNT * 0.5;
 
   // Ventana de intercepcion. Venia de 400 ms, que es el filo del papel: la
@@ -188,11 +199,13 @@
   // unidad que un diseñador entiende: "le erra por 75 px". Es la perilla que
   // FR35 tiene que exponer.
   //
-  // 75 px sale del simulador de duelo completo (`tools/banco/duelo-completo.js`),
-  // que modela a ESTE jugador con sus numeros medidos y busca el objetivo de
-  // diseño de que la IA gane el 30-40%: 50 px -> gana 53%, 70 px -> 33%,
-  // 90 px -> 29%, 110 px -> 19%.
-  const AI_DISPERSION_PX = 75;
+  // Sale del simulador de duelo completo (`tools/banco/duelo-completo.js`),
+  // que modela a ESTE jugador con sus numeros medidos y apunta al objetivo de
+  // diseño de que la IA gane el 30-40% de los duelos. Recalibrado en la it.8
+  // junto con la curacion de reparar, con 400 duelos por punto:
+  //   55 px -> gana 35% · **60 px -> 37%** · 65 px -> 33%
+  // (el margen de error con 400 duelos es de unos 2,5 puntos).
+  const AI_DISPERSION_PX = 60;
   // Registro de disparos: un gatillo, un evento. Ver duel2-shotlog.js.
   const shotLog = DF.ShotLog.createShotLog({
     log: function (type, data) { DF.Telemetry.log(type, data); },
@@ -225,6 +238,7 @@
   // Intencion de la IA: a que piso le quiere pegar y con que. Sobrevive entre
   // cuadros hasta que puede disparar. Ver updateAI.
   let aiIntent = null;    // { target, weaponKey }
+  let aiUltimaFueReparar = false;
   let aiLastShotAt = 0;
   let lastStretchStep = -1;
   let previewPoints = null;
@@ -700,6 +714,7 @@
     weaponToast = null;
     aiPending = null;
     aiIntent = null;
+    aiUltimaFueReparar = false;
     playerWasDestroyed = false;
     aiWasDestroyed = false;
     state.phase = 'playing';
@@ -855,6 +870,15 @@
       x: tower.originX + floor.width / 2, y: floor.y,
       at: performance.now(), duracion: 700, calidad: 0.5, texto: '+' + Math.round(curado)
     });
+    // El rival tiene que ser LEGIBLE. Su disparo tiene un aviso de 650 ms y su
+    // reparacion no tenia nada: el usuario vio "deja de disparar" y pregunto
+    // si la IA reparaba, o sea que la accion existia y no se leia.
+    if (!esJugador) {
+      hitMarks.push({
+        x: tower.originX + floor.width / 2, y: floor.y - 16,
+        at: performance.now(), duracion: 1100, calidad: 1, texto: 'REPARA'
+      });
+    }
     DF.Telemetry.log(esJugador ? 'repair' : 'ai_repair', {
       duelIndex: duelIndex, energia: REPAIR_COST, curado: +curado.toFixed(1),
       material: floor.material || floor.role,
@@ -1038,15 +1062,23 @@
     // victorias, porque cada reparacion es un disparo que no hace. Se elige
     // igual: la asimetria de que el rival no tuviera la herramienta era mas
     // grande que el efecto.
-    if (DF.Tower2.totalHpPercent(aiTower) < 0.6 && aiEnergy.value >= REPAIR_COST) {
+    // NUNCA dos reparaciones seguidas. Sin esta guarda la IA entraba en
+    // espiral: la sesion 8 tiene tandas de cuatro y cinco reparaciones
+    // seguidas (15 s y 20 s sin disparar), justo cuando mas falta le hacia
+    // atacar. El usuario lo reporto como "por ahi deja de disparar", y tenia
+    // razon. La condicion era "por debajo del 60%", y una vez abajo no volvia
+    // a subir porque el jugador le seguia pegando.
+    if (!aiUltimaFueReparar && DF.Tower2.totalHpPercent(aiTower) < 0.6 && aiEnergy.value >= REPAIR_COST) {
       const piso = pisoMasUrgente(aiTower);
       if (piso && Math.random() < 0.5) {
         if (aplicarReparacion(aiTower, aiEnergy, piso, false)) {
+          aiUltimaFueReparar = true;
           aiLastShotAt = nowMs;   // le cuesta el turno
           return;
         }
       }
     }
+    aiUltimaFueReparar = false;
 
     // La IA ESPERA por el arma que eligio. El comentario de armaDeLaIA decia
     // que ya lo hacia y no era cierto: `puedeDisparar` devolvia null y en el
