@@ -249,7 +249,10 @@
   // sobre la torre del jugador: sin esto, reparar es una mecánica invisible y
   // el criterio C1 del portón mediría "nadie sabía que existía" en vez de
   // "reparar está mal balanceado".
-  function drawRepairHints(ctx, tower, canAfford, nowMs) {
+  // `vale` decide que pisos se marcan: no alcanza con que esten daniados, la
+  // reparacion tiene que devolver una cantidad util. Asi el borde verde deja de
+  // ofrecer un mal negocio en vez de tener que bloquearlo despues del toque.
+  function drawRepairHints(ctx, tower, canAfford, nowMs, vale) {
     if (!canAfford) return;
     const pulse = 0.45 + 0.35 * Math.sin(nowMs / 260);
     ctx.save();
@@ -258,7 +261,7 @@
     ctx.lineWidth = 2.5;
     ctx.setLineDash([5, 4]);
     for (const f of tower.floors) {
-      if (!DF.Tower2.canRepair(f)) continue;
+      if (!(vale ? vale(f) : DF.Tower2.canRepair(f))) continue;
       ensureRenderY(f);
       ctx.strokeRect(tower.originX - 1, f.renderY - 1, f.width + 2, f.height + 2);
     }

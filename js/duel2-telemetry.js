@@ -23,6 +23,13 @@
   'use strict';
 
   const STORAGE_KEY = 'df_telemetry_v1';
+  // Estado de la sesion ABIERTA, separado del log de eventos. Existe por un
+  // defecto encontrado en el dia 1 del porton: cada recarga de la pagina
+  // creaba un `session_start` nuevo, y una sola sentada quedo registrada como
+  // tres sesiones. Con eso, A1 ("abriste espontaneamente?") y A2 ("una mas")
+  // miden recargas en vez de conducta.
+  const SESSION_KEY = 'df_session_v1';
+  const SESSION_MAX_AGE_MS = 6 * 60 * 60 * 1000; // una sentada no dura mas que esto
   const SCHEMA = 1;
 
   let events = [];
@@ -30,6 +37,7 @@
   let sessionStartMs = 0;
   let duelosPropuestos = 0;
   let duelosJugados = 0;
+  let duelIndex = 0;
 
   function loadAll() {
     try {
@@ -46,6 +54,38 @@
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
     } catch (e) { /* ver loadAll */ }
+  }
+
+  function persistSession() {
+    try {
+      if (!sessionId) {
+        window.localStorage.removeItem(SESSION_KEY);
+        return;
+      }
+      window.localStorage.setItem(SESSION_KEY, JSON.stringify({
+        sessionId: sessionId,
+        startedAt: Date.now() - Math.round(performance.now() - sessionStartMs),
+        duelosPropuestos: duelosPropuestos,
+        duelosJugados: duelosJugados,
+        duelIndex: duelIndex
+      }));
+    } catch (e) { /* ver loadAll */ }
+  }
+
+  function loadOpenSession() {
+    try {
+      const raw = window.localStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const st = JSON.parse(raw);
+      if (!st || !st.sessionId) return null;
+      if (Date.now() - st.startedAt > SESSION_MAX_AGE_MS) {
+        window.localStorage.removeItem(SESSION_KEY);
+        return null;
+      }
+      return st;
+    } catch (e) {
+      return null;
+    }
   }
 
   function log(type, data) {
@@ -70,6 +110,7 @@
     sessionStartMs = performance.now();
     duelosPropuestos = opts.duelosPropuestos || 0;
     duelosJugados = 0;
+    duelIndex = 0;
     log('session_start', {
       schema: SCHEMA,
       prompted: !!opts.prompted,
@@ -78,11 +119,54 @@
       ua: navigator.userAgent,
       viewport: window.innerWidth + 'x' + window.innerHeight
     });
+    persistSession();
     return sessionId;
+  }
+
+  // Retoma la sesion abierta tras una recarga, en vez de abrir una nueva.
+  // Devuelve el estado retomado, o null si no habia ninguna. La recarga queda
+  // registrada como `session_reload`, que es un dato util (cuantas veces se
+  // recargo) sin inflar la cuenta de sesiones de la que dependen A1 y A2.
+  function resumeSession() {
+    const st = loadOpenSession();
+    if (!st) return null;
+    events = loadAll();
+    sessionId = st.sessionId;
+    sessionStartMs = performance.now() - (Date.now() - st.startedAt);
+    duelosPropuestos = st.duelosPropuestos || 0;
+    duelosJugados = st.duelosJugados || 0;
+    duelIndex = st.duelIndex || 0;
+
+    // Recargar la pagina dispara el mismo evento que guardar el telefono, asi
+    // que el duelo en curso se registra como "abandon". Pero recargar NO es
+    // abandonar: en el dia 1 del porton, dos de los cuatro duelos figuraron
+    // como abandonados cuando en realidad eran recargas mias arreglando el
+    // layout, y el criterio A3 daba 100%. Si el ultimo evento es un abandono
+    // de hace segundos y a continuacion arranca una recarga, se reetiqueta.
+    const ultimo = events[events.length - 1];
+    if (ultimo && ultimo.type === 'duel_end' && ultimo.motivo === 'abandon' &&
+        (Date.now() - Date.parse(ultimo.ts)) < 10000) {
+      ultimo.motivo = 'reload';
+      duelosJugados = Math.max(0, duelosJugados - 1); // tampoco cuenta como duelo jugado
+      persist();
+    }
+
+    log('session_reload', { duelosJugados: duelosJugados, duelIndex: duelIndex });
+    persistSession();
+    return st;
   }
 
   function countDuel() {
     duelosJugados++;
+    persistSession();
+  }
+
+  // El numero de duelo tiene que sobrevivir a la recarga: si no, tras recargar
+  // vuelve a 1 y no se pueden distinguir duelos distintos dentro de la sesion.
+  function nextDuelIndex() {
+    duelIndex++;
+    persistSession();
+    return duelIndex;
   }
 
   function endSession(opts) {
@@ -95,6 +179,7 @@
       ganasDespues: (opts && opts.ganasDespues) || null
     });
     sessionId = null;
+    persistSession(); // borra el estado abierto
   }
 
   function hasOpenSession() {
@@ -133,7 +218,13 @@
 
   function clearAll() {
     events = [];
-    try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ver loadAll */ }
+    sessionId = null;
+    duelosJugados = 0;
+    duelIndex = 0;
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(SESSION_KEY);
+    } catch (e) { /* ver loadAll */ }
   }
 
   // --- Resumen en vivo ---------------------------------------------------
@@ -143,7 +234,13 @@
   function summary() {
     const all = loadAll();
     const sessions = all.filter(function (e) { return e.type === 'session_start'; });
-    const duels = all.filter(function (e) { return e.type === 'duel_end'; });
+    const recargas = all.filter(function (e) { return e.type === 'session_reload'; });
+    // Los duelos cortados por una recarga no cuentan para ningun criterio: no
+    // son abandono (A3) ni duracion valida (C3), y dejarlos en el denominador
+    // ensuciaria los dos.
+    const duels = all.filter(function (e) {
+      return e.type === 'duel_end' && e.motivo !== 'reload';
+    });
     const shots = all.filter(function (e) { return e.type === 'shot'; });
     const repairs = all.filter(function (e) { return e.type === 'repair'; });
     const intercepts = all.filter(function (e) { return e.type === 'intercept_try'; });
@@ -162,6 +259,7 @@
 
     return {
       sesiones: sessions.length,
+      recargas: recargas.length,
       espontaneas: sessions.filter(function (s) { return s.prompted === false; }).length,
       duelos: duels.length,
       // A3
@@ -187,9 +285,11 @@
   DF.Telemetry = {
     STORAGE_KEY: STORAGE_KEY,
     startSession: startSession,
+    resumeSession: resumeSession,
     endSession: endSession,
     hasOpenSession: hasOpenSession,
     countDuel: countDuel,
+    nextDuelIndex: nextDuelIndex,
     log: log,
     exportJson: exportJson,
     download: download,

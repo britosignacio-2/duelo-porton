@@ -68,6 +68,12 @@
   // la cicatriz permanente de duel2-tower.js, no un cooldown.
   const REPAIR_COST = 34;
   const REPAIR_AMOUNT = 14; // ~40% de un muro: repara de verdad, no lo deja nuevo
+  // Como el costo es fijo, reparar un piso casi lleno es un mal negocio que el
+  // jugador no puede anticipar (dia 1: 34 de energia por 3,9 de vida). En vez
+  // de cobrarselo y que lo descubra despues, un piso solo se ofrece como
+  // reparable cuando devuelve al menos esto. No cambia el balance de reparar:
+  // saca del menu la opcion que nadie elegiria informado.
+  const REPAIR_MIN_USEFUL = REPAIR_AMOUNT * 0.5;
 
   // --- P2: interceptar ---------------------------------------------------
   const INTERCEPT_WINDOW_MS = 400;  // ventana antes del impacto previsto
@@ -319,6 +325,7 @@
       });
       if (result.hit) {
         const now = performance.now();
+        const objetivoEsJugador = p.owner === 'ai';
         const hitX = p.x, hitY = p.y;
         const dmg = DF.Weapons.computeDamage(p.weaponKey, result.floor);
         DF.Tower2.applyDamage(targetTower, result.floor, dmg, now);
@@ -330,10 +337,12 @@
         spawnImpactParticles(hitX, hitY, materialRGB(result.floor), 7 + Math.round(strength * 6));
         DF.Sfx.playThud(strength);
         triggerShake(3 + strength * 7);
-        if (p.owner === 'player') logShot(p.weaponKey, true, result.floor);
+        if (objetivoEsJugador) logAiShot(p.weaponKey, true, result.floor);
+        else logShot(p.weaponKey, true, result.floor);
         projectiles.splice(i, 1);
       } else if (result.outOfBounds) {
-        if (p.owner === 'player') logShot(p.weaponKey, false, null);
+        if (p.owner === 'ai') logAiShot(p.weaponKey, false, null);
+        else logShot(p.weaponKey, false, null);
         projectiles.splice(i, 1);
       }
     }
@@ -347,6 +356,22 @@
       hit: hit,
       materialObjetivo: floor ? (floor.material || floor.role) : null,
       pisoImpactado: floor ? aiTower.floors.indexOf(floor) : null // 0 = piso de abajo
+    });
+  }
+
+  // Los disparos de la IA van en su propio tipo de evento, no en `shot`: si
+  // se mezclaran, contaminarian B1 (diversidad de armas) y B2 (punteria), que
+  // miden al JUGADOR. Se registran porque el dia 1 dejo una pregunta sin
+  // responder -- los duelos duraron 70 s y se ganaron con 54% y 79% de vida
+  // propia, y sin este dato no se puede saber si la IA es un rival de verdad
+  // o si simplemente no llega a disparar.
+  function logAiShot(weaponKey, hit, floor) {
+    DF.Telemetry.log('ai_shot', {
+      duelIndex: duelIndex,
+      weapon: weaponKey,
+      costo: DF.Weapons.WEAPONS[weaponKey].cost,
+      hit: hit,
+      materialObjetivo: floor ? (floor.material || floor.role) : null
     });
   }
 
@@ -446,7 +471,7 @@
     state.phase = 'playing';
     state.winner = null;
     roundStartMs = performance.now();
-    duelIndex++;
+    duelIndex = DF.Telemetry.nextDuelIndex();
     duelLogged = false;
     DF.Telemetry.log('duel_start', {
       duelIndex: duelIndex,
@@ -493,6 +518,13 @@
     return true;
   }
 
+  // Unico criterio de "este piso se puede reparar y vale la pena". Lo usan
+  // la pista verde, el aviso de onboarding y el toque, para que lo que se
+  // ofrece y lo que se cobra no puedan discrepar nunca.
+  function valeReparar(floor) {
+    return DF.Tower2.repairableAmount(floor) >= REPAIR_MIN_USEFUL;
+  }
+
   // --- P1: reparar -------------------------------------------------------
   // Devuelve true si el toque se consumió.
   function tryRepair(x, y) {
@@ -503,7 +535,7 @@
 
     const floor = DF.Tower2.findHitFloor(playerTower, x, y, 10);
     if (!floor) return false;
-    if (!DF.Tower2.canRepair(floor)) return false;
+    if (DF.Tower2.repairableAmount(floor) < REPAIR_MIN_USEFUL) return false;
     if (playerEnergy.value < REPAIR_COST) {
       DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
       return true;
@@ -673,7 +705,7 @@
     DF.TowerRender2.drawTower(ctx, playerTower, now);
     DF.TowerRender2.drawTower(ctx, aiTower, now);
     if (state.phase === 'playing') {
-      DF.TowerRender2.drawRepairHints(ctx, playerTower, playerEnergy.value >= REPAIR_COST, now);
+      DF.TowerRender2.drawRepairHints(ctx, playerTower, playerEnergy.value >= REPAIR_COST, now, valeReparar);
     }
     DF.TowerRender2.drawParticles(ctx, particles);
     DF.TowerRender2.drawProjectiles(ctx, projectiles, now);
@@ -765,7 +797,7 @@
   function drawRepairTip(ctx) {
     if (state.phase !== 'playing' || duelIndex > 2) return;
     if (playerEnergy.value < REPAIR_COST) return;
-    if (!playerTower.floors.some(DF.Tower2.canRepair)) return;
+    if (!playerTower.floors.some(valeReparar)) return;
     ctx.fillStyle = DF.TowerRender2.UI.repair;
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
@@ -832,7 +864,6 @@
   function start() {
     if (started) return;
     started = true;
-    duelIndex = 0;
     resetGame();
     setupInput();
     window.addEventListener('resize', onResize);

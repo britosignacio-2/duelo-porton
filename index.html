@@ -237,6 +237,17 @@
     DF.TowerMain2.start();
   });
 
+  // Si quedó una sesión abierta (recarga de la página, o volver a entrar al
+  // rato), se retoma en vez de abrir una nueva y volver a preguntar. El día 1
+  // del portón quedó registrado como tres sesiones distintas por este motivo,
+  // y con eso A1 y A2 medían recargas en vez de conducta.
+  const retomada = DF.Telemetry.resumeSession();
+  if (retomada) {
+    startOverlay.hidden = true;
+    logBtn.hidden = false;
+    DF.TowerMain2.start();
+  }
+
   logBtn.addEventListener('click', function () { logOverlay.hidden = false; });
   document.getElementById('btn-close').addEventListener('click', function () {
     logOverlay.hidden = true;

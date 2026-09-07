@@ -177,6 +177,15 @@
     return floor.hp < Math.min(floor.maxHp, floor.repairCeiling);
   }
 
+  // Cuanta vida se puede recuperar realmente en este piso. El dia 1 del porton
+  // mostro el problema: reparar cobra precio fijo, asi que un piso a punto de
+  // tocar su techo devolvia 3,9 de vida por los mismos 34 de energia que antes
+  // habia devuelto 14. El jugador no tenia forma de saberlo antes de tocar.
+  function repairableAmount(floor) {
+    if (!floor.alive || floor.collapsing) return 0;
+    return Math.max(0, Math.min(floor.maxHp, floor.repairCeiling) - floor.hp);
+  }
+
   // % de la vida ORIGINAL de la fortaleza que sigue en pie. Los pisos muertos
   // cuentan como 0, no se excluyen del denominador (ver maxTotalHp).
   function totalHpPercent(tower) {
@@ -199,6 +208,7 @@
     applySplash: applySplash,
     repairFloor: repairFloor,
     canRepair: canRepair,
+    repairableAmount: repairableAmount,
     updateCollapses: updateCollapses,
     countAliveFloors: countAliveFloors,
     totalHpPercent: totalHpPercent
