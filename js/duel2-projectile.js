@@ -24,6 +24,16 @@
   const RADIUS = 6;
   const MAX_SUBSTEPS = 8;
 
+  // Escala global de velocidad inicial. Junto con la gravedad mas baja de
+  // duel2-main, alarga el tiempo de vuelo ~30% SIN cambiar el alcance
+  // (alcance ~ v²/g, tiempo ~ v/g: bajando v a 0.75 y g a 0.57 el alcance
+  // queda igual y el vuelo se estira). Es la respuesta a "todo fluye muy
+  // rapido": el jugador actuaba cada 1.79 s y su eleccion de arma dio 0.51
+  // de calidad promedio -- o sea, azar. A ese ritmo no hay decision posible,
+  // solo reflejo. Un arco mas largo tambien se LEE mejor, que es lo que hace
+  // visibles a los arquetipos.
+  const ESCALA_VELOCIDAD = 0.75;
+
   // Un proyectil recien nacido. Centraliza los campos que cada arquetipo
   // necesita para que main no tenga que acordarse de inicializarlos.
   function createProjectile(cfg) {
@@ -41,6 +51,9 @@
       // empuje la acompañaria -- se clavaria en el piso en vez de enderezarse.
       dirX: cfg.vx / speed,
       dirY: cfg.vy / speed,
+      // Velocidad con la que nacio: el empuje del cohete se calcula sobre
+      // esto, asi un tiro flojo acelera poco y uno fuerte acelera mucho.
+      speed0: speed,
       rebotesRestantes: w.rebotes || 0,
       pisosRestantes: w.pisosQueAtraviesa || 1,
       pisosGolpeados: [],
@@ -69,10 +82,12 @@
     p.vy += g * dt;
     p.vx += vientoEfectivo * dt;
 
-    // Empuje del cohete, solo mientras dura el combustible.
+    // Empuje del cohete, solo mientras dura el combustible y proporcional a
+    // la fuerza con la que se lanzo (ver thrustFactor en duel2-weapons.js).
     if (p.kind === 'cohete' && p.ageMs < (w.thrustMs || 0)) {
-      p.vx += p.dirX * (w.thrust || 0) * dt;
-      p.vy += p.dirY * (w.thrust || 0) * dt;
+      const emp = (w.thrustFactor || 0) * (p.speed0 || 0);
+      p.vx += p.dirX * emp * dt;
+      p.vy += p.dirY * emp * dt;
     }
 
     p.x += p.vx * dt;
@@ -195,17 +210,19 @@
   // muchisimo con el mismo gesto; los demas solo escalan.
   function initialVelocity(weaponKey, vx, vy) {
     const w = DF.Weapons.WEAPONS[weaponKey];
+    const e = ESCALA_VELOCIDAD;
     if (w.kind === 'mortero') {
       return {
-        vx: vx * w.speedMul * (w.arcoHorizontal || 0.6),
-        vy: vy * w.speedMul * (w.arcoVertical || 1.5)
+        vx: vx * w.speedMul * (w.arcoHorizontal || 0.6) * e,
+        vy: vy * w.speedMul * (w.arcoVertical || 1.5) * e
       };
     }
-    return { vx: vx * w.speedMul, vy: vy * w.speedMul };
+    return { vx: vx * w.speedMul * e, vy: vy * w.speedMul * e };
   }
 
   DF.TowerProjectile2 = {
     RADIUS: RADIUS,
+    ESCALA_VELOCIDAD: ESCALA_VELOCIDAD,
     createProjectile: createProjectile,
     updateProjectileVsTower: updateProjectileVsTower,
     splitCluster: splitCluster,

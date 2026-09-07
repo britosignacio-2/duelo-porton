@@ -17,7 +17,10 @@
 (function (DF) {
   'use strict';
 
-  const GRAVITY = 1400;
+  // Gravedad bajada de 1400. Con la escala de velocidad de duel2-projectile
+  // el alcance queda igual y el vuelo se estira ~30%: los arcos se leen, y
+  // cada disparo deja de ser un reflejo.
+  const GRAVITY = 800;
   const FLOOR_W_MIN = 46;
   const FLOOR_W_MAX = 90;
   const MARGIN_RATIO = 0.06;
@@ -74,11 +77,20 @@
   const ROUND_LIMIT_MS = 180000;
   const ESCALATION_START_MS = 90000;
   const ESCALATION_MAX_MULT = 2.0;
-  const BASE_REGEN = DF.Energy.DEFAULTS.regenPerSecond;
+  // Bajada de los 14/s que trae energy.js (que se deja intacto porque lo
+  // comparte el prototipo validado). Con 14 se podia actuar cada ~1.8 s, y a
+  // ese ritmo la eleccion de arma dio 0.51 de calidad: azar. Con 10 un
+  // disparo pasa a ser un compromiso.
+  const BASE_REGEN = 10;
 
   // La IA telegrafia el disparo antes de soltarlo. Sin esto el rival no se
   // lee: le llueven proyectiles al jugador como si fuera clima.
-  const AI_TELL_MS = 480;
+  const AI_TELL_MS = 650;
+  // Piso duro entre disparos de la IA. En la iteracion 2 tiraba cada 1.83 s y
+  // el jugador sentia que tenia que correrle: "apretas botones y tiras rapido
+  // sin pensar". El intervalo no reemplaza al costo ni al cooldown, los
+  // complementa: es el techo de agresividad del rival.
+  const AI_MIN_INTERVAL_MS = 2400;
 
   // Cuanto espera el banner tras terminar el duelo, para que el colapso final
   // se pueda disfrutar en vez de taparlo con un cartel de texto.
@@ -116,6 +128,7 @@
   // trabajos y por eso el arma barata se podia disparar sin parar.
   let weaponReadyAt = {};
   let aiPending = null;   // { at, weaponKey, target }
+  let aiLastShotAt = 0;
   let lastStretchStep = -1;
   let previewPoints = null;
   // Botones de defensa, abajo a la derecha: son para el pulgar DERECHO, que
@@ -305,7 +318,29 @@
     const dmgFinal = dmg * factor;
 
     DF.Tower2.applyDamage(targetTower, floor, dmgFinal, now);
-    if (w.splash) DF.Tower2.applySplash(targetTower, floor, dmgFinal * 0.4, now);
+    // Splash VISIBLE. Antes se aplicaba en silencio: el mortero hacia ~47 de
+    // daño real por 34 de energia (casi el doble de eficiente que el
+    // perforador) y el jugador lo usaba la mitad, porque solo veia UN impacto.
+    // Estaba optimizando por impacto percibido en vez de daño real. Ahora cada
+    // vecino golpeado tiene su flash, sus particulas y su numero.
+    if (w.splash) {
+      const idx = targetTower.floors.indexOf(floor);
+      [idx - 1, idx + 1].forEach(function (i) {
+        const vecino = targetTower.floors[i];
+        if (!vecino || !vecino.alive || vecino.collapsing) return;
+        const dmgVecino = dmgFinal * 0.4;
+        DF.Tower2.applyDamage(targetTower, vecino, dmgVecino, now);
+        vecino.hitFlashAt = now;
+        vecino.hitFlashFuerza = 0.35;
+        const cx = targetTower.originX + vecino.width / 2;
+        const cy = vecino.y + vecino.height / 2;
+        spawnImpactParticles(cx, cy, materialRGB(vecino), 5, 0.35);
+        hitMarks.push({
+          x: cx, y: cy, at: now, duracion: 650, calidad: 0.5,
+          texto: String(Math.round(dmgVecino))
+        });
+      });
+    }
 
     floor.hitFlashAt = now;
     floor.hitFlashFuerza = calidad;
@@ -398,19 +433,26 @@
     });
   }
 
-  // Ranquea las armas que la IA puede pagar y elige entre las dos mejores.
+  // Elige el arma de la IA. BUG CORREGIDO (iteracion 2): antes filtraba por
+  // cooldown ANTES de rankear, y como la granada tiene el cooldown mas corto
+  // de todas era casi siempre lo unico disponible -- resultado: 169 granadas
+  // de 171 disparos, el 98.8%. Le habia armado un bucle, y ese bucle era la
+  // fuente de la presion que hacia sentir el juego apurado.
+  //
+  // Ahora rankea TODAS por valor, elige entre las dos mejores, y si esa no
+  // esta lista, ESPERA en vez de caer en la mas barata. La IA dispara menos y
+  // mejor, que es exactamente lo que hace falta.
   function armaDeLaIA(floor) {
-    const opciones = DF.Weapons.ORDER
-      .filter(function (k) { return puedeDisparar(aiEnergy, k); })
+    const ranking = DF.Weapons.ORDER
       .map(function (k) {
         const w = DF.Weapons.WEAPONS[k];
         const mul = floor.role === 'torreta' ? w.turretBonus : (w.materialMul[floor.material] || 1);
         return { k: k, valor: w.baseDamage * mul };
       })
       .sort(function (a, b) { return b.valor - a.valor; });
-    if (!opciones.length) return null;
-    const top = opciones.slice(0, 2);
-    return top[Math.floor(Math.random() * top.length)].k;
+    const top = ranking.slice(0, 2);
+    const elegida = top[Math.floor(Math.random() * top.length)].k;
+    return puedeDisparar(aiEnergy, elegida) ? elegida : null;
   }
 
   function randomAliveFloor(tower) {
@@ -491,6 +533,7 @@
     shakeMag = 0;
     flashMag = 0;
     weaponReadyAt = {};
+    aiLastShotAt = 0;
     interceptReadyAt = 0;
     weaponToast = null;
     aiPending = null;
@@ -778,18 +821,15 @@
           spawnProjectile(aiMuzzle.x, aiMuzzle.y, v.vx, v.vy, 'ai', aiPending.weaponKey);
           DF.Sfx.playShot(aiPending.weaponKey);
           aiMuzzle.disparoAt = nowMs;
+          aiLastShotAt = nowMs;
         }
         aiPending = null;
       }
       return;
     }
+    if (nowMs - aiLastShotAt < AI_MIN_INTERVAL_MS) return;
     const target = randomAliveFloor(playerTower);
     if (!target) return;
-    // Antes elegia SIEMPRE la mejor arma teorica contra ese material, sin
-    // variar: en la iteracion 1 tiro 94 granadas de 177 disparos, e insistio
-    // 67 veces con el mortero pese a acertar solo el 16% (sufria el mismo bug
-    // de alcance que el jugador). Ahora sortea entre sus dos mejores opciones
-    // disponibles, lo que la vuelve menos predecible sin hacerla mas certera.
     const key = armaDeLaIA(target);
     if (!key) return;
     aiPending = { at: nowMs, weaponKey: key, target: target };

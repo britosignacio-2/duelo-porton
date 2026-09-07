@@ -81,7 +81,7 @@
       kind: 'balistico',
       speedMul: 1.0, cost: 26, baseDamage: 18, cooldownMs: 600,
       splash: false, preview: false,
-      color: '#e8d7c3', trail: 'none',
+      color: '#e8d7c3', trail: 'none', forma: 'roca',
       materialMul: { madera: 1.0, metal: 1.0, piedra: 1.0 },
       turretBonus: 1.0
     },
@@ -95,12 +95,17 @@
       splash: false, preview: true,
       // Empuje sostenido en la direccion inicial. La gravedad lo dobla al
       // principio, el empuje lo endereza despues.
-      thrust: 1800, thrustMs: 750,
+      // Empuje PROPORCIONAL a la velocidad inicial, no una constante. Con un
+      // valor fijo (1800) el empuje no dependia del arrastre: a potencia
+      // minima el cohete llegaba a 2104 px cuando la torre rival esta a 458 --
+      // se iba 4.6 veces de largo en el disparo mas debil posible, o sea era
+      // inapuntable. Proporcional, el arrastre vuelve a decidir cuanto vuela.
+      thrustFactor: 2.2, thrustMs: 600,
       // Mas afectado por el viento que nadie: lento y con superficie. Es a
       // proposito -- si fuera inmune al viento seria el arma sin desventaja y
       // volveriamos al problema de "rapido" con otro nombre.
       windMul: 1.6,
-      color: '#ff8b3d', trail: 'fuego',
+      color: '#ff8b3d', trail: 'fuego', forma: 'misil',
       materialMul: { madera: 0.80, metal: 1.35, piedra: 1.15 },
       turretBonus: 1.0
     },
@@ -123,7 +128,7 @@
       // llega, pero exige casi maxima potencia. Un tiro comprometido.
       arcoVertical: 1.4, arcoHorizontal: 0.80, gravedadCaida: 1.3,
       windMul: 1.2,
-      color: '#c9bda8', trail: 'humo',
+      color: '#c9bda8', trail: 'humo', forma: 'bomba',
       materialMul: { madera: 1.20, metal: 0.80, piedra: 1.35 },
       turretBonus: 1.0
     },
@@ -133,14 +138,17 @@
       flavor: 'Pica en el suelo antes de estallar.',
       rol: 'La BASE de la torre, con un tiro rasante y barato.',
       kind: 'rebote',
-      speedMul: 1.1, cost: 24, baseDamage: 16, cooldownMs: 900,
+      speedMul: 0.95, cost: 24, baseDamage: 16, cooldownMs: 900,
       splash: true, preview: true,
       // Perdia 45% de la velocidad vertical en cada rebote y solo tenia dos:
       // picaba y se moria antes de llegar a la torre. Ahora patina como piedra
       // en el agua.
-      rebotes: 3, reboteVertical: 0.70, reboteHorizontal: 0.90,
+      // Con la gravedad mas baja los rebotes conservan mas energia y la
+      // granada se iba de largo (587 px con potencia minima, contra 458 que
+      // hacen falta). Se recortan un poco respecto de la iteracion 2.
+      rebotes: 3, reboteVertical: 0.45, reboteHorizontal: 0.75,
       windMul: 1.0,
-      color: '#5fd08a', trail: 'chispa',
+      color: '#5fd08a', trail: 'chispa', forma: 'granada',
       materialMul: { madera: 1.35, metal: 0.80, piedra: 0.85 },
       turretBonus: 1.0
     },
@@ -159,11 +167,11 @@
       // Ahora es CONDICIONAL: 14 por un solo piso (pesimo para 40 de energia)
       // y 28 si atraviesa dos (muy bueno). Deja de ser el mejor siempre y pasa
       // a premiar enfilar dos pisos, que es su identidad de diseño.
-      speedMul: 1.3, cost: 40, baseDamage: 14, cooldownMs: 2000,
+      speedMul: 1.3, cost: 40, baseDamage: 14, cooldownMs: 2600,
       splash: false, preview: false,
       pisosQueAtraviesa: 2, dañoAlSegundo: 1.0,
       windMul: 0.7, // tenso y rapido: el viento casi no lo dobla
-      color: '#ffd23f', trail: 'estela',
+      color: '#ffd23f', trail: 'estela', forma: 'dardo',
       materialMul: { madera: 1.30, metal: 1.10, piedra: 0.75 },
       turretBonus: 1.0
     },
@@ -177,7 +185,7 @@
       splash: false, preview: true,
       fragmentos: 3, dispersion: 0.35,
       windMul: 1.3,
-      color: '#d98cff', trail: 'chispa',
+      color: '#d98cff', trail: 'chispa', forma: 'racimo',
       materialMul: { madera: 1.25, metal: 0.85, piedra: 0.80 },
       turretBonus: 1.0
     }

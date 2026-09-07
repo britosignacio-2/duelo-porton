@@ -548,10 +548,97 @@
     estela: { r: 255, g: 210, b: 63, ancho: 2 }
   };
 
+  // Forma propia por arquetipo, rotada hacia donde va. Eran todos circulos de
+  // radio 6 con distinto color: "los proyectiles son muy parecidos
+  // esteticamente, solo cambian un poco el color". La silueta se lee antes que
+  // el tono, y en un juego donde la eleccion de arma ES la decision, tener que
+  // distinguirlas por matiz es pedirle demasiado al jugador.
+  function dibujarForma(ctx, forma, r, color, ageMs) {
+    ctx.fillStyle = color;
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+
+    if (forma === 'misil') {
+      // Cuerpo largo con ojiva y aletas traseras.
+      ctx.moveTo(r * 1.9, 0);
+      ctx.lineTo(r * 0.5, -r * 0.62);
+      ctx.lineTo(-r * 1.3, -r * 0.62);
+      ctx.lineTo(-r * 1.3, r * 0.62);
+      ctx.lineTo(r * 0.5, r * 0.62);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.9, -r * 0.6); ctx.lineTo(-r * 1.9, -r * 1.3);
+      ctx.lineTo(-r * 1.2, -r * 0.2);
+      ctx.moveTo(-r * 0.9, r * 0.6); ctx.lineTo(-r * 1.9, r * 1.3);
+      ctx.lineTo(-r * 1.2, r * 0.2);
+      ctx.fill(); ctx.stroke();
+      return;
+    }
+
+    if (forma === 'bomba') {
+      // Panzona, con cola. Se ve pesada.
+      ctx.ellipse(0, 0, r * 1.25, r * 1.05, 0, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-r * 1.1, 0);
+      ctx.lineTo(-r * 2.0, -r * 0.85);
+      ctx.lineTo(-r * 1.7, 0);
+      ctx.lineTo(-r * 2.0, r * 0.85);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      return;
+    }
+
+    if (forma === 'dardo') {
+      // Punta afilada: se lee que atraviesa.
+      ctx.moveTo(r * 2.2, 0);
+      ctx.lineTo(-r * 0.9, -r * 0.5);
+      ctx.lineTo(-r * 1.6, 0);
+      ctx.lineTo(-r * 0.9, r * 0.5);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      return;
+    }
+
+    if (forma === 'granada') {
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();  // palanca
+      ctx.rect(-r * 0.25, -r * 1.5, r * 0.5, r * 0.7);
+      ctx.fillStyle = '#c9bda8';
+      ctx.fill(); ctx.stroke();
+      return;
+    }
+
+    if (forma === 'racimo') {
+      // Tres esferas atadas: se ve que se va a partir.
+      [[0, -r * 0.75], [-r * 0.7, r * 0.5], [r * 0.7, r * 0.5]].forEach(function (c) {
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], r * 0.62, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      });
+      return;
+    }
+
+    // 'roca': peñasco irregular, gira lento con la edad.
+    const giro = (ageMs || 0) / 420;
+    const puntas = 7;
+    for (let i = 0; i < puntas; i++) {
+      const a = giro + (i / puntas) * Math.PI * 2;
+      const rr = r * (0.78 + rnd(i * 3.1) * 0.5);
+      const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+
   function drawProjectiles(ctx, projectiles, nowMs) {
     projectiles.forEach(function (p) {
       const w = DF.Weapons.WEAPONS[p.weaponKey];
-      const r = DF.TowerProjectile2.RADIUS * (p.esFragmento ? 0.7 : 1);
+      const r = DF.TowerProjectile2.RADIUS * (p.esFragmento ? 0.65 : 1);
 
       // Estela: dice de un vistazo que este proyectil NO vuela como los otros.
       const tipo = ESTELA[w.trail];
@@ -572,10 +659,12 @@
         const f = 0.7 + 0.3 * Math.sin(nowMs / 40);
         ctx.fillStyle = 'rgba(255,180,60,' + (0.85 * f).toFixed(2) + ')';
         ctx.beginPath();
-        ctx.arc(p.x - p.dirX * 9, p.y - p.dirY * 9, 5 * f, 0, Math.PI * 2);
+        ctx.arc(p.x - p.dirX * 11, p.y - p.dirY * 11, 5.5 * f, 0, Math.PI * 2);
         ctx.fill();
       }
 
+      // Halo de interceptable: circular a proposito, alrededor de cualquier
+      // forma, para que la señal sea la misma siempre.
       if (p.interceptable) {
         const pulso = 0.5 + 0.5 * Math.sin(nowMs / 90);
         ctx.save();
@@ -583,19 +672,22 @@
         ctx.strokeStyle = UI.intercept;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 8 + pulso * 6, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r + 9 + pulso * 6, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
-        ctx.fillStyle = UI.intercept;
-      } else {
-        ctx.fillStyle = p.owner === 'player' ? (w.color || '#f07a2d') : '#e8d7c3';
       }
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = OUTLINE;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      // El racimo y la roca no apuntan: van cayendo. Los demas se orientan.
+      const forma = p.esFragmento ? 'racimo' : (w.forma || 'roca');
+      if (forma !== 'roca' && forma !== 'racimo') {
+        ctx.rotate(Math.atan2(p.vy, p.vx));
+      }
+      const color = p.interceptable ? UI.intercept
+                  : (p.owner === 'player' ? (w.color || '#f07a2d') : '#e8d7c3');
+      dibujarForma(ctx, forma, r, color, p.ageMs);
+      ctx.restore();
     });
   }
 
