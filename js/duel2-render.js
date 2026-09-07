@@ -750,6 +750,112 @@
     }
   }
 
+  // --- Viento ---------------------------------------------------------------
+  //
+  // Venia siendo una linea de texto de 14 px ("Viento <- 77") y el usuario
+  // pidio algo que se vea. No es cosmetico: el viento se sortea una vez por
+  // duelo, no cambia mas, y el criterio B3 del porton es literalmente "el
+  // viento se lee". Una fuerza que hay que ir a leer en numeritos no se lee.
+  //
+  // Dos capas, las dos escaladas por la fuerza:
+  //   - rachas en el cielo, que dan la sensacion y la direccion de un vistazo;
+  //   - un medidor de galones en el HUD, que da el numero exacto cuando hace
+  //     falta afinar el tiro.
+  // Con viento 0 no se dibuja NADA: la ausencia tambien es informacion.
+
+  // Ruido determinista: la misma racha cae siempre en la misma altura, asi el
+  // cielo no titila entre cuadros.
+  function hash01(i) {
+    const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  // Se dibujan ANTES que las torres: son fondo, no interfaz. Horizontales y
+  // finas a proposito, para no confundirse nunca con un proyectil (que vuela
+  // en arco y es un cuerpo solido).
+  function drawWindStreaks(ctx, viewW, topY, bottomY, wind, windMax, nowMs) {
+    const f = Math.min(1, Math.abs(wind) / (windMax || 1));
+    if (f < 0.02) return;
+    const dir = wind >= 0 ? 1 : -1;
+    const n = Math.round(3 + 11 * f);
+    const largo = 16 + 78 * f;
+    const vel = 30 + 300 * f;              // px/s
+    const alto = Math.max(10, bottomY - topY);
+    const ciclo = viewW + largo + 200;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (let i = 0; i < n; i++) {
+      const y = topY + hash01(i * 3.1) * alto;
+      const desfase = hash01(i * 7.7) * ciclo;
+      const avance = (nowMs / 1000) * vel * (0.7 + hash01(i * 5.3) * 0.6);
+      let x = ((desfase + avance) % ciclo) - 100;
+      if (dir < 0) x = viewW - x;
+      const l = largo * (0.55 + hash01(i * 11.9) * 0.45);
+      const a = (0.06 + 0.20 * f) * (0.5 + hash01(i * 2.3) * 0.5);
+      ctx.strokeStyle = 'rgba(232,220,200,' + a.toFixed(3) + ')';
+      ctx.lineWidth = 1 + 1.6 * f * hash01(i * 4.7);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + l * dir, y);
+      ctx.stroke();
+      // Punta: dos trazos cortos que marcan hacia donde sopla.
+      const px = x + l * dir;
+      ctx.beginPath();
+      ctx.moveTo(px, y);
+      ctx.lineTo(px - 5 * dir, y - 2.5);
+      ctx.moveTo(px, y);
+      ctx.lineTo(px - 5 * dir, y + 2.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Medidor del HUD: galones que crecen en cantidad y en tamaño con la fuerza,
+  // apuntando hacia donde sopla, y el numero al lado.
+  function drawWindGauge(ctx, cx, cy, wind, windMax) {
+    const f = Math.min(1, Math.abs(wind) / (windMax || 1));
+    const dir = wind >= 0 ? 1 : -1;
+    const valor = Math.abs(wind).toFixed(0);
+    const galones = f < 0.02 ? 0 : 1 + Math.round(3 * f);
+    const paso = 6 + 4 * f;
+    const alturaGalon = 4 + 5 * f;
+    const anchoGalones = galones ? (galones - 1) * paso + 7 : 0;
+
+    ctx.save();
+    ctx.font = 'bold 15px sans-serif';
+    const anchoNum = ctx.measureText(valor).width;
+    const sep = galones ? 9 : 0;
+    const total = anchoGalones + sep + anchoNum;
+    // El grupo entero queda centrado, y adentro el numero va del lado
+    // CONTRARIO a donde sopla: asi los galones siempre apuntan hacia afuera y
+    // la direccion se lee sin pensarla.
+    let x = cx - total / 2;
+    const xNum = dir > 0 ? x : x + anchoGalones + sep;
+    const xGal = dir > 0 ? x + anchoNum + sep : x;
+
+    ctx.fillStyle = f < 0.02 ? 'rgba(201,189,168,0.55)' : 'rgb(232,220,200)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(valor, xNum, cy);
+
+    ctx.strokeStyle = 'rgba(232,220,200,' + (0.45 + 0.5 * f).toFixed(2) + ')';
+    ctx.lineWidth = 1.5 + f;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let i = 0; i < galones; i++) {
+      const gx = xGal + i * paso;
+      const punta = gx + (dir > 0 ? 7 : 0);
+      const cola = gx + (dir > 0 ? 0 : 7);
+      ctx.beginPath();
+      ctx.moveTo(cola, cy - alturaGalon);
+      ctx.lineTo(punta, cy);
+      ctx.lineTo(cola, cy + alturaGalon);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.textBaseline = 'alphabetic';
+  }
+
   function drawAimArrow(ctx, startX, startY, vx, vy, maxSpeed, ok) {
     const speed = Math.hypot(vx, vy);
     const len = 26 + Math.min(1, speed / maxSpeed) * 90;
@@ -921,6 +1027,8 @@
     drawTower: drawTower,
     drawAimArrow: drawAimArrow,
     drawPreview: drawPreview,
+    drawWindStreaks: drawWindStreaks,
+    drawWindGauge: drawWindGauge,
     drawParticles: drawParticles,
     drawRepairHints: drawRepairHints,
     drawProjectiles: drawProjectiles,

@@ -92,7 +92,15 @@
   // rival esta a 458 -- no llegaban ni a potencia plena. Y de paso empujaba
   // al jugador al perforador, que es el arma que menos sufre el viento
   // (windMul 0.7) y se llevo el 57.7% de los disparos.
-  const WIND_MAX = 150;
+  // Bajado de 150 (it.6). Con el arena ya capado por GAP_MAX, en el peor caso
+  // -- viento maximo en contra y gomera en su posicion mas baja -- el cohete
+  // llegaba justo al 1,02x de la distancia necesaria: reachable en la teoria,
+  // un solo angulo a potencia plena en la practica. Por la leccion del mortero
+  // de la it.1, eso se juega igual que "no llega". Margen del cohete por nivel
+  // de viento: 150 -> 1,02x · 110 -> 1,12x · 90 -> 1,18x · 75 -> 1,22x.
+  // A 90 el viento le sigue comiendo el 21% del alcance, o sea sigue pesando
+  // fuerte, pero desaparece la zona muerta. Elegido por el usuario.
+  const WIND_MAX = 90;
   const MUZZLE_HEIGHT_MIN = 0.42;
   const MUZZLE_HEIGHT_MAX = 0.78;
 
@@ -151,7 +159,20 @@
   // IA paso de acertar 13 de 77 a ~85%, mas que el propio jugador (73% en el
   // ultimo log): habia que subirle el error, no bajarle la punteria. Este es
   // el parametro que FR35 va a exponer como niveles de dificultad.
-  const aiController = DF.AI.createAI({ angleErrorMax: 0.30, speedErrorRatio: 0.22 });
+  // `speedErrorRatio` 0,22 -> 0,15 (it.6). Medido en `tools/banco/ia-perillas.js`:
+  // de las dos perillas, la del ANGULO casi no mueve la aguja y la de la
+  // POTENCIA manda. Desde el ajuste anterior, llevar el angulo a 0 subia el
+  // acierto 11 puntos; llevar la potencia a 0 lo subia 30. Por eso se toca una
+  // sola: ademas de ser la que sirve, deja el proximo log atribuible.
+  //
+  // Con 485 hp de torre y viento 90, la IA pasa de 52% de acierto y 107 s para
+  // tumbarte a 63% y 86 s. Sobre eso hay que descontar lo que la sesion 6
+  // midio jugando: le interceptaste 20 de 73 disparos y la torre se achica a
+  // medida que avanza el duelo, asi que su numero efectivo es ~la mitad. El
+  // objetivo es que pueda cerrar en ~150 s -- que sea una pelea, no que gane.
+  //
+  // FR35 debe exponer ESTA perilla, no `angleErrorMax`.
+  const aiController = DF.AI.createAI({ angleErrorMax: 0.30, speedErrorRatio: 0.15 });
   // Registro de disparos: un gatillo, un evento. Ver duel2-shotlog.js.
   const shotLog = DF.ShotLog.createShotLog({
     log: function (type, data) { DF.Telemetry.log(type, data); },
@@ -181,6 +202,9 @@
   // trabajos y por eso el arma barata se podia disparar sin parar.
   let weaponReadyAt = {};
   let aiPending = null;   // { at, weaponKey, target }
+  // Intencion de la IA: a que piso le quiere pegar y con que. Sobrevive entre
+  // cuadros hasta que puede disparar. Ver updateAI.
+  let aiIntent = null;    // { target, weaponKey }
   let aiLastShotAt = 0;
   let lastStretchStep = -1;
   let previewPoints = null;
@@ -556,8 +580,7 @@
       })
       .sort(function (a, b) { return b.valor - a.valor; });
     const top = ranking.slice(0, 2);
-    const elegida = top[Math.floor(Math.random() * top.length)].k;
-    return puedeDisparar(aiEnergy, elegida) ? elegida : null;
+    return top[Math.floor(Math.random() * top.length)].k;
   }
 
   function randomAliveFloor(tower) {
@@ -591,6 +614,7 @@
     shotLog.cerrarTodos();
     projectiles = [];
     aiPending = null;
+    aiIntent = null;
     DF.Sfx.playOutcome(winner === 'player');
     if (!duelLogged) {
       duelLogged = true;
@@ -648,6 +672,7 @@
     interceptReadyAt = 0;
     weaponToast = null;
     aiPending = null;
+    aiIntent = null;
     playerWasDestroyed = false;
     aiWasDestroyed = false;
     state.phase = 'playing';
@@ -972,10 +997,26 @@
       return;
     }
     if (nowMs - aiLastShotAt < AI_MIN_INTERVAL_MS) return;
-    const target = randomAliveFloor(playerTower);
-    if (!target) return;
-    const key = armaDeLaIA(target);
-    if (!key) return;
+
+    // La IA ESPERA por el arma que eligio. El comentario de armaDeLaIA decia
+    // que ya lo hacia y no era cierto: `puedeDisparar` devolvia null y en el
+    // cuadro siguiente se volvia a sortear objetivo Y arma, asi que en la
+    // practica ganaba lo que estuviera disponible -- o sea lo barato. Medido:
+    // el ranking puro da mortero 42% / cohete 37% / piedra 12% / granada 9%,
+    // con la puerta daba mortero 32% / cohete 27% / granada 23% / piedra 18%,
+    // y jugando salio mortero 33% / granada 29% / piedra 19% / cohete 18%.
+    // Es el mismo bicho que el bucle de las 169 granadas de la it.2, mas
+    // suave. Con la intencion guardada, la IA junta la energia y tira el arma
+    // que de verdad eligio.
+    if (aiIntent && (!aiIntent.target.alive || aiIntent.target.collapsing)) aiIntent = null;
+    if (!aiIntent) {
+      const target = randomAliveFloor(playerTower);
+      if (!target) return;
+      aiIntent = { target: target, weaponKey: armaDeLaIA(target) };
+    }
+    if (!puedeDisparar(aiEnergy, aiIntent.weaponKey)) return;   // junta y espera
+    const key = aiIntent.weaponKey, target = aiIntent.target;
+    aiIntent = null;
     aiPending = { at: nowMs, weaponKey: key, target: target };
     DF.Sfx.playAiTell();
   }
@@ -1062,6 +1103,9 @@
     ctx.translate(sx, sy);
 
     DF.TowerRender2.drawArena(ctx, viewW, viewH, groundY);
+    // Rachas de viento: fondo, no interfaz. Van antes de las torres para que
+    // pasen por detras y nunca se confundan con un proyectil.
+    DF.TowerRender2.drawWindStreaks(ctx, viewW, HUD_TOP + 6, groundY - 10, wind, WIND_MAX, now);
     DF.TowerRender2.drawTower(ctx, playerTower, now);
     DF.TowerRender2.drawTower(ctx, aiTower, now);
     if (state.phase === 'playing') {
@@ -1218,11 +1262,7 @@
   }
 
   function drawWindIndicator(ctx) {
-    const flecha = wind >= 0 ? '→' : '←';
-    ctx.fillStyle = '#c9bda8';
-    ctx.font = '14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Viento ' + flecha + ' ' + Math.abs(wind).toFixed(0), viewW / 2, 18);
+    DF.TowerRender2.drawWindGauge(ctx, viewW / 2, 15, wind, WIND_MAX);
   }
 
   function drawTimer(ctx, nowMs) {
@@ -1234,7 +1274,7 @@
     ctx.fillStyle = left <= 30000 ? '#ff5a6e' : (escalando ? DF.TowerRender2.UI.aim : '#c9bda8');
     ctx.font = escalando ? 'bold 15px sans-serif' : '13px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(m + ':' + (s < 10 ? '0' : '') + s, viewW / 2, 36);
+    ctx.fillText(m + ':' + (s < 10 ? '0' : '') + s, viewW / 2, 37);
     if (escalando && state.phase === 'playing') {
       ctx.font = '10px sans-serif';
       ctx.fillText('⚡ energía acelerada', viewW / 2, HUD_TOP + 8);
