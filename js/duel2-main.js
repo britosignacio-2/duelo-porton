@@ -29,7 +29,18 @@
   const MIN_GAP_PX = 140;
   let FLOOR_W = 70;
 
-  const FLOOR_HP = { torreta: 30, muro: 35 };
+  // Vida por piso x2,9 (venia de muro 35 / torreta 30). No es un ajuste de
+  // duracion suelto: viene atado a la bajada de 8 pisos a 5 (ver LAYOUT).
+  // Menos pisos = menos vida total = duelos aun mas cortos, y C3 ya venia
+  // fallando con 78 s contra un objetivo de 120-210. Con 4 muros de 100 y una
+  // torreta de 85 la torre queda en 485 hp, x1,8 de los 270 que tenia: el
+  // factor que el banco calculo que hace falta para llegar al objetivo.
+  //
+  // Efecto de diseño que interesa mas que la duracion: si bajar un piso cuesta
+  // cuatro o cinco tiros en vez de dos, elegir el arma correcta para ESE
+  // material se acumula en vez de decidirse en un tiro suelto. Recien ahi el
+  // material es una decision.
+  const FLOOR_HP = { torreta: 85, muro: 100 };
   const FLOOR_H_MAX = 40;
   const FLOOR_H_MIN = 18;
   let FLOOR_H_CUR = FLOOR_H_MAX;
@@ -39,16 +50,34 @@
   const HUD_TOP = 44;
   const HUD_BOTTOM = 78;
 
-  // OCHO pisos (venia de cinco). No es solo para alargar el duelo -- que
-  // duraba 39 s contra un objetivo de 2-3 min y sube la vida total un 64%.
-  // El motivo principal es que los arquetipos necesitan ESPACIO VERTICAL para
-  // diferenciarse: con cinco pisos, "llega arriba" y "llega abajo" estaban a
-  // 200 px y la diferencia era sutil. Con ocho, el cohete y la granada atacan
-  // mundos distintos, y el orden en que se apilan los materiales empieza a
-  // importar de verdad -- que es el agujero que la auditoria marco en §1.4.
-  // Las dos torretas van en el medio, no en los extremos, para que haya que
-  // atravesar muro para llegarles.
-  const LAYOUT = ['muro', 'muro', 'torreta', 'muro', 'muro', 'torreta', 'muro', 'muro'];
+  // CINCO pisos. La iteracion 2 los habia subido de 5 a 8 "porque los
+  // arquetipos necesitan espacio vertical para diferenciarse". El razonamiento
+  // era bueno y la medicion estaba mal hecha: se decidio mirando un canvas de
+  // escritorio. En un telefono EN HORIZONTAL no hay espacio vertical.
+  //
+  // `layout()` reparte el 70% del alto disponible entre los pisos:
+  //   FLOOR_H = clamp(floor((viewH - 126) * 0.70 / n), 18, 40)
+  // Hacen falta 583 px de alto para pisos de 40 con n=8. Un telefono en
+  // horizontal con la barra del navegador da ~215: el reparto se rinde, clava
+  // el minimo de 18 px, y la torre de 144 px se pasa del techo del HUD.
+  //
+  // Consecuencia medida (tools/banco/piso-objetivo.js): de cada diez impactos,
+  // DOS caen en el piso al que se apunto. Y ahi se cae toda la promesa de
+  // arma-vs-material, porque el material vive en un piso y el piso no se puede
+  // elegir -- la calidad de eleccion de arma dio 0,54 (azar) en la sesion 5
+  // aunque el jugador estuviera eligiendo a proposito.
+  //
+  // Pegarle AL piso que se apunta, en horizontal a pantalla completa:
+  //   8 pisos (20 px) 23%  ·  6 (27 px) 32%  ·  5 (32 px) 36%  ·  4 (40 px) 44%
+  //
+  // Cinco es el punto donde el blanco vuelve a ser elegible sin que la torre
+  // deje de ser una torre. La torreta va en el medio, nunca en un extremo,
+  // para que haya que atravesar muro para llegarle. Los cuatro muros mantienen
+  // la variedad de materiales, que con menos pisos es lo que hay que cuidar.
+  //
+  // El GDD deja la cantidad de slots de muro como `[ASUNCION: pendiente de
+  // balanceo]`; esto es la primera respuesta medida a esa asuncion.
+  const LAYOUT = ['muro', 'muro', 'torreta', 'muro', 'muro'];
 
   const STARTING_ENERGY = 51;
   // Bajado de 260. El desvio del viento crece con el CUADRADO del tiempo de
@@ -605,6 +634,13 @@
     DF.Telemetry.log('duel_start', {
       duelIndex: duelIndex, preset: LAYOUT.join('-'),
       wind: Math.round(wind), muzzleHeight: +muzzleHeightFactor.toFixed(3),
+      // La geometria cambia el juego mas que casi cualquier constante: a
+      // 800x450 las gomeras quedan a 464 px y en un telefono vertical a 140,
+      // y con eso se mueven el alcance, la dificultad y hasta que arma sirve.
+      // Sin esto en el log, ningun numero de punteria se puede comparar entre
+      // sesiones -- ni contra el banco, que hay que correr en el mismo viewport.
+      viewW: viewW, viewH: viewH,
+      distanciaGomeras: Math.round(aiMuzzle.x - playerMuzzle.x),
       materialesPropios: playerTower.floors.map(function (f) { return f.material || f.role; }),
       materialesRival: aiTower.floors.map(function (f) { return f.material || f.role; })
     });
@@ -747,6 +783,32 @@
 
   // Previsualizacion: simula hacia adelante con el MISMO integrador del vuelo
   // real, sobre una copia. Solo para los arquetipos no intuitivos.
+  // Previsualizacion. Antes cortaba el dibujo justo en la division del racimo
+  // ("de ahi en mas se abre en tres: no se promete nada") -- y ese era
+  // exactamente el dato que hace util al arma. Medido: si el racimo se parte a
+  // mas de 350 px de la torre, pegan 0 o 1 fragmentos; si se parte a 180-220,
+  // pegan 2 o 3. O sea que hay un tiro bueno, depende enteramente de DONDE se
+  // parte, y el jugador no tenia forma de verlo. Reporte textual suyo: "se
+  // divide en 3 pero casi siempre solo uno impacta". Tenia razon, y la causa
+  // no era la dispersion: era que estaba tirando el tiro equivocado a ciegas.
+  //
+  // Devuelve { principal, division, ramas } -- el tramo hasta la division, el
+  // punto donde se abre, y las tres trayectorias hijas.
+  function simularTramo(p, pasos) {
+    const pts = [{ x: p.x, y: p.y }];
+    const dt = 1 / 60;
+    for (let i = 0; i < pasos; i++) {
+      const r = DF.TowerProjectile2.updateProjectileVsTower(p, dt, {
+        gravity: GRAVITY, wind: wind, targetTower: aiTower,
+        bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
+      });
+      pts.push({ x: p.x, y: p.y });
+      if (r.hit || r.outOfBounds) return { pts: pts, fin: r };
+      if (r.divide) return { pts: pts, fin: r };
+    }
+    return { pts: pts, fin: {} };
+  }
+
   function computePreview(vx, vy) {
     const w = DF.Weapons.WEAPONS[currentWeaponKey];
     if (!w.preview) return null;
@@ -754,18 +816,15 @@
       x: playerMuzzle.x, y: playerMuzzle.y, vx: vx, vy: vy,
       owner: 'player', weaponKey: currentWeaponKey
     });
-    const pts = [{ x: sim.x, y: sim.y }];
-    const dt = 1 / 60;
-    for (let i = 0; i < 150; i++) {
-      const r = DF.TowerProjectile2.updateProjectileVsTower(sim, dt, {
-        gravity: GRAVITY, wind: wind, targetTower: aiTower,
-        bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
+    const tramo = simularTramo(sim, 150);
+    const out = { principal: tramo.pts, division: null, ramas: [] };
+    if (tramo.fin.divide) {
+      out.division = { x: sim.x, y: sim.y };
+      DF.TowerProjectile2.splitCluster(sim).forEach(function (f) {
+        out.ramas.push(simularTramo(f, 150).pts);
       });
-      pts.push({ x: sim.x, y: sim.y });
-      if (r.hit || r.outOfBounds) break;
-      if (r.divide) break; // de ahi en mas se abre en tres: no se promete nada
     }
-    return pts;
+    return out;
   }
 
   function setupInput() {

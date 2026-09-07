@@ -695,22 +695,59 @@
   // es intuitiva (cohete, mortero, granada, racimo). La regla no es "todas o
   // ninguna": se muestra lo que el sentido comun no te dice. Una piedra que
   // cae la predice cualquiera; un cohete que acelera, no.
-  function drawPreview(ctx, puntos, ok) {
-    if (!puntos || puntos.length < 2) return;
-    ctx.save();
-    ctx.setLineDash([2, 7]);
-    ctx.strokeStyle = ok ? 'rgba(255,210,63,0.55)' : 'rgba(255,90,110,0.55)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(puntos[0].x, puntos[0].y);
-    for (let i = 1; i < puntos.length; i++) ctx.lineTo(puntos[i].x, puntos[i].y);
-    ctx.stroke();
-    ctx.restore();
-    const fin = puntos[puntos.length - 1];
-    ctx.fillStyle = ok ? 'rgba(255,210,63,0.7)' : 'rgba(255,90,110,0.7)';
-    ctx.beginPath();
-    ctx.arc(fin.x, fin.y, 3.5, 0, Math.PI * 2);
-    ctx.fill();
+  // `preview` es { principal, division, ramas } -- ver computePreview en
+  // duel2-main.js. Se acepta tambien un array suelto por si alguna vez se
+  // dibuja una trayectoria sin division.
+  function drawPreview(ctx, preview, ok) {
+    if (!preview) return;
+    const principal = preview.principal || preview;
+    if (!principal || principal.length < 2) return;
+    const base = ok ? '255,210,63' : '255,90,110';
+
+    function linea(pts, alpha, ancho, guion) {
+      if (!pts || pts.length < 2) return;
+      ctx.save();
+      ctx.setLineDash(guion);
+      ctx.strokeStyle = 'rgba(' + base + ',' + alpha + ')';
+      ctx.lineWidth = ancho;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+      const fin = pts[pts.length - 1];
+      ctx.fillStyle = 'rgba(' + base + ',' + Math.min(1, alpha + 0.15) + ')';
+      ctx.beginPath();
+      ctx.arc(fin.x, fin.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    linea(principal, 0.55, 2, [2, 7]);
+
+    // La division del racimo: el punto donde se abre en tres es LA decision de
+    // esa arma (partirse cerca del blanco o lejos cambia de 0-1 impactos a
+    // 2-3), asi que se dibuja como un evento, no como un vertice mas.
+    const ramas = preview.ramas || [];
+    ramas.forEach(function (r) { linea(r, 0.34, 1.5, [2, 5]); });
+
+    if (preview.division) {
+      const d = preview.division;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(' + base + ',0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      // Cuatro chispas cortas hacia afuera: se lee como "acá se abre".
+      for (let i = 0; i < 4; i++) {
+        const a = (Math.PI / 4) + i * (Math.PI / 2);
+        ctx.beginPath();
+        ctx.moveTo(d.x + Math.cos(a) * 8, d.y + Math.sin(a) * 8);
+        ctx.lineTo(d.x + Math.cos(a) * 12, d.y + Math.sin(a) * 12);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   function drawAimArrow(ctx, startX, startY, vx, vy, maxSpeed, ok) {

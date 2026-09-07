@@ -226,7 +226,30 @@
     answers.ganasPost = v; btnEnd.disabled = false;
   });
 
+  // Pantalla completa. El GDD especifica landscape + fullscreen y el prototipo
+  // nunca lo pidio: en un telefono en horizontal la barra del navegador se come
+  // ~145 px de alto de un viewport de ~360, o sea el 40% del alto util. Con eso
+  // `layout()` clava los pisos en su minimo de 18 px y la torre se sale por
+  // arriba (se ve en las fotos de la sesion 5).
+  //
+  // Ojo con la expectativa: medido, esto lleva el alto de ~215 a ~360 px y los
+  // pisos de 18 a 20. Arregla el desborde y devuelve pantalla, NO arregla que
+  // el blanco sea fino -- eso lo arregla la cantidad de pisos. Son dos cosas.
+  //
+  // Solo se puede pedir dentro de un gesto real del usuario, y hay navegadores
+  // (Safari en iPhone) donde directamente no existe: si falla, no pasa nada.
+  function pedirPantallaCompleta() {
+    const el = document.documentElement;
+    const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!fn) return;
+    try {
+      const p = fn.call(el);
+      if (p && p.catch) p.catch(function () { /* el usuario o el navegador dijo que no */ });
+    } catch (e) { /* idem */ }
+  }
+
   btnStart.addEventListener('click', function () {
+    pedirPantallaCompleta();
     DF.Telemetry.startSession({
       prompted: answers.prompted,
       ganasAntes: answers.ganas,
@@ -247,6 +270,12 @@
     startOverlay.hidden = true;
     logBtn.hidden = false;
     DF.TowerMain2.start();
+    // Retomar no es un gesto del usuario, asi que el navegador rechazaria el
+    // pedido de pantalla completa. Se engancha al primer toque de verdad.
+    window.addEventListener('pointerdown', function unaVez() {
+      window.removeEventListener('pointerdown', unaVez);
+      pedirPantallaCompleta();
+    }, { once: false });
   }
 
   logBtn.addEventListener('click', function () { logOverlay.hidden = false; });
