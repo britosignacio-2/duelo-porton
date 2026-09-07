@@ -27,6 +27,11 @@
   const MUZZLE_PAD = 30;
   const MIN_GAP_RATIO = 0.32;
   const MIN_GAP_PX = 140;
+  // Techo de la distancia entre gomeras, en px. 470 es la geometria con la que
+  // se calibro el viento en la it.4 (un viewport de 800 daba 464). Ver el
+  // comentario en layout(): sin tope, una pantalla mas ancha exige un alcance
+  // que las armas no tienen.
+  const GAP_MAX = 470;
   let FLOOR_W = 70;
 
   // Vida por piso x2,9 (venia de muro 35 / torreta 30). No es un ajuste de
@@ -292,9 +297,29 @@
     for (const f of playerTower.floors) { f.width = FLOOR_W; f.height = FLOOR_H_CUR; }
     for (const f of aiTower.floors) { f.width = FLOOR_W; f.height = FLOOR_H_CUR; }
 
-    playerTower.originX = margin;
+    // TOPE de la distancia entre gomeras. Sin esto, todo el ancho que sobra se
+    // va al hueco del medio, y entonces cada telefono juega un juego distinto:
+    // el alcance de las armas es fijo (lo dan la gravedad y SPEED_MAX) pero la
+    // distancia a cubrir crece con la pantalla.
+    //
+    // Lo destapo la pantalla completa de la it.5: el viewport paso de ~800 a
+    // 915 px de ancho y las gomeras de 464 a 565 px. Medido con la gomera en su
+    // posicion mas baja y viento maximo en contra, el cohete llegaba a 510 px y
+    // el mortero a 532 contra los 595 que hacian falta: **no llegaban**. Es el
+    // mismo modo de falla que el mortero al que le faltaba un pixel en la it.1
+    // -- un arma que no llega no es dificil, es imposible, y eso nunca es una
+    // decision de diseño.
+    //
+    // El GDD ya lo pedia: "la proporcion geometrica gomera-a-gomera que
+    // garantiza tiempo de vuelo real no cambia entre arenas". El ancho que
+    // sobra pasa a ser margen a los costados.
+    const margenExtra = Math.max(0,
+      (viewW - 2 * margin - 2 * FLOOR_W - 2 * MUZZLE_PAD - GAP_MAX) / 2);
+    const margenReal = margin + margenExtra;
+
+    playerTower.originX = margenReal;
     playerTower.groundY = groundY;
-    aiTower.originX = viewW - margin - FLOOR_W;
+    aiTower.originX = viewW - margenReal - FLOOR_W;
     aiTower.groundY = groundY;
     DF.Tower2.layoutTower(playerTower);
     DF.Tower2.layoutTower(aiTower);
