@@ -51,7 +51,14 @@
   const LAYOUT = ['muro', 'muro', 'torreta', 'muro', 'muro', 'torreta', 'muro', 'muro'];
 
   const STARTING_ENERGY = 51;
-  const WIND_MAX = 260;
+  // Bajado de 260. El desvio del viento crece con el CUADRADO del tiempo de
+  // vuelo, asi que al alargar el vuelo ~30% en la iteracion 3 el viento se
+  // volvio ~69% mas fuerte sin tocarle el numero. Medido: con viento maximo
+  // en contra, el cohete llegaba a 436 px y el mortero a 435 cuando la torre
+  // rival esta a 458 -- no llegaban ni a potencia plena. Y de paso empujaba
+  // al jugador al perforador, que es el arma que menos sufre el viento
+  // (windMul 0.7) y se llevo el 57.7% de los disparos.
+  const WIND_MAX = 150;
   const MUZZLE_HEIGHT_MIN = 0.42;
   const MUZZLE_HEIGHT_MAX = 0.78;
 
@@ -105,7 +112,12 @@
   let aiMuzzle = { x: 0, y: 0 };
   let groundY = 0;
   let projectiles = [];
-  const aiController = DF.AI.createAI();
+  // Error de punteria de la IA. Se sobreescribe aca en vez de tocar ai.js,
+  // que lo comparte el prototipo validado. Con el apuntado por simulacion la
+  // IA paso de acertar 13 de 77 a ~85%, mas que el propio jugador (73% en el
+  // ultimo log): habia que subirle el error, no bajarle la punteria. Este es
+  // el parametro que FR35 va a exponer como niveles de dificultad.
+  const aiController = DF.AI.createAI({ angleErrorMax: 0.30, speedErrorRatio: 0.22 });
   const state = { phase: 'playing', winner: null, roundoverAt: 0 };
   let input = null;
   let lastT = null;
@@ -431,6 +443,55 @@
       costo: DF.Weapons.WEAPONS[weaponKey].cost, hit: hit,
       materialObjetivo: floor ? (floor.material || floor.role) : null
     });
+  }
+
+  // Apuntado de la IA POR SIMULACION, no por formula.
+  //
+  // `DF.AI.computeAimVelocity` resuelve una parabola balistica pura: ignora la
+  // escala global de velocidad (0.75), el speedMul de cada arma, el empuje del
+  // cohete, el reparto de arco del mortero, los rebotes de la granada y el
+  // viento. Como despues `initialVelocity` multiplica ese resultado, la IA
+  // apuntaba bien y el juego le acortaba el tiro: en la iteracion 3 acerto 13
+  // de 77 disparos (piedra 1/23, mortero 1/19, cohete 0/14) y el jugador gano
+  // los tres duelos con 61%, 66% y 72% de su torre intacta.
+  //
+  // Aca la IA barre angulos y potencias con el MISMO integrador que usa el
+  // vuelo real, y se queda con la combinacion que pasa mas cerca del blanco.
+  // Sale correcta para los seis arquetipos sin casos especiales, y sigue
+  // siendo correcta si la fisica vuelve a cambiar. Despues se le suma el error
+  // de punteria, que es lo que gradua la dificultad.
+  function apuntarPorSimulacion(weaponKey, desde, objetivo) {
+    const dir = objetivo.x < desde.x ? -1 : 1;
+    let mejor = null;
+    const NA = 11, NP = 9;
+    for (let ia = 0; ia < NA; ia++) {
+      const ang = (12 + (ia / (NA - 1)) * 68) * Math.PI / 180;
+      for (let ip = 0; ip < NP; ip++) {
+        const S = DF.Input.SPEED_MIN + (ip / (NP - 1)) * (DF.Input.SPEED_MAX - DF.Input.SPEED_MIN);
+        const iv = DF.TowerProjectile2.initialVelocity(weaponKey, dir * Math.cos(ang) * S, -Math.sin(ang) * S);
+        const sim = DF.TowerProjectile2.createProjectile({
+          x: desde.x, y: desde.y, vx: iv.vx, vy: iv.vy, owner: 'ai', weaponKey: weaponKey
+        });
+        let dmin = Infinity;
+        for (let i = 0; i < 300; i++) {
+          // Torre vacia a proposito: se busca la distancia minima al PUNTO,
+          // no el primer choque.
+          const r = DF.TowerProjectile2.updateProjectileVsTower(sim, 1 / 60, {
+            gravity: GRAVITY, wind: wind, targetTower: { floors: [] },
+            bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
+          });
+          const d = Math.hypot(sim.x - objetivo.x, sim.y - objetivo.y);
+          if (d < dmin) dmin = d;
+          if (r.outOfBounds || r.divide) break;
+        }
+        if (!mejor || dmin < mejor.d) mejor = { d: dmin, ang: ang, S: S };
+      }
+    }
+    if (!mejor) return null;
+    // Error de punteria: es la perilla de dificultad, no un defecto.
+    const ang = mejor.ang + (Math.random() * 2 - 1) * aiController.angleErrorMax;
+    const S = mejor.S * (1 + (Math.random() * 2 - 1) * aiController.speedErrorRatio);
+    return { vx: dir * Math.cos(ang) * S, vy: -Math.sin(ang) * S };
   }
 
   // Elige el arma de la IA. BUG CORREGIDO (iteracion 2): antes filtraba por
@@ -815,7 +876,8 @@
         const target = aiPending.target;
         if (target && target.alive && !target.collapsing) {
           const c = floorCenter(playerTower, target);
-          const v0 = DF.AI.computeAimVelocity(aiController, aiMuzzle, c, GRAVITY);
+          const v0 = apuntarPorSimulacion(aiPending.weaponKey, aiMuzzle, c);
+          if (!v0) { aiPending = null; return; }
           const v = DF.TowerProjectile2.initialVelocity(aiPending.weaponKey, v0.vx, v0.vy);
           gastar(aiEnergy, aiPending.weaponKey);
           spawnProjectile(aiMuzzle.x, aiMuzzle.y, v.vx, v.vy, 'ai', aiPending.weaponKey);
@@ -1158,6 +1220,8 @@
       proyectilInterceptable: proyectilInterceptable,
       interceptCooldown: interceptCooldown,
       armaDeLaIA: armaDeLaIA,
+      apuntarPorSimulacion: apuntarPorSimulacion,
+      WIND_MAX: WIND_MAX,
       LAYOUT: LAYOUT
     }
   };
