@@ -172,7 +172,27 @@
   // objetivo es que pueda cerrar en ~150 s -- que sea una pelea, no que gane.
   //
   // FR35 debe exponer ESTA perilla, no `angleErrorMax`.
-  const aiController = DF.AI.createAI({ angleErrorMax: 0.30, speedErrorRatio: 0.15 });
+  // DISPERSION DEL PUNTO DE IMPACTO, en pixeles. Reemplaza al error angular
+  // (0,30 rad) y de potencia (0,15) de las iteraciones anteriores.
+  //
+  // El error angular producia dificultades distintas segun la distancia, y por
+  // lo tanto segun como estuviera agarrado el telefono. Medido dentro del
+  // juego en vertical (gomeras a 140 px): el cohete de la IA acertaba 95% y la
+  // piedra 10%. Causa: el alcance va con sin(2t), y a corta distancia la
+  // solucion es un tiro casi plano -- 11,7 grados de media, que el error
+  // abria de -5,2 a 28,9. A 12 grados un error de 17 MAS QUE DUPLICA el
+  // alcance; a 45, que es la solucion tipica en horizontal, casi no lo mueve.
+  //
+  // Dispersando el BLANCO en pixeles, la dificultad significa lo mismo a
+  // cualquier distancia y en cualquier orientacion, y se puede expresar en una
+  // unidad que un diseñador entiende: "le erra por 75 px". Es la perilla que
+  // FR35 tiene que exponer.
+  //
+  // 75 px sale del simulador de duelo completo (`tools/banco/duelo-completo.js`),
+  // que modela a ESTE jugador con sus numeros medidos y busca el objetivo de
+  // diseño de que la IA gane el 30-40%: 50 px -> gana 53%, 70 px -> 33%,
+  // 90 px -> 29%, 110 px -> 19%.
+  const AI_DISPERSION_PX = 75;
   // Registro de disparos: un gatillo, un evento. Ver duel2-shotlog.js.
   const shotLog = DF.ShotLog.createShotLog({
     log: function (type, data) { DF.Telemetry.log(type, data); },
@@ -556,10 +576,17 @@
       }
     }
     if (!mejor) return null;
-    // Error de punteria: es la perilla de dificultad, no un defecto.
-    const ang = mejor.ang + (Math.random() * 2 - 1) * aiController.angleErrorMax;
-    const S = mejor.S * (1 + (Math.random() * 2 - 1) * aiController.speedErrorRatio);
-    return { vx: dir * Math.cos(ang) * S, vy: -Math.sin(ang) * S };
+    return { vx: dir * Math.cos(mejor.ang) * mejor.S, vy: -Math.sin(mejor.ang) * mejor.S };
+  }
+
+  // Corre el blanco un poco al azar ANTES de resolver, en vez de ensuciar la
+  // solucion despues. Ver AI_DISPERSION_PX: es la perilla de dificultad.
+  // Disco uniforme (sqrt del radio), no cuadrado: sin eso los tiros se
+  // amontonarian en las esquinas del error.
+  function objetivoConDispersion(objetivo) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * AI_DISPERSION_PX;
+    return { x: objetivo.x + Math.cos(a) * r, y: objetivo.y + Math.sin(a) * r };
   }
 
   // Elige el arma de la IA. BUG CORREGIDO (iteracion 2): antes filtraba por
@@ -753,9 +780,9 @@
   // El piso propio mas urgente de reparar. La decision que importa es SI gastas
   // energia en reparar en vez de disparar, no CUAL piso -- eso casi siempre es
   // el mas roto. Sacar la eleccion tonta deja la interesante.
-  function pisoMasUrgente() {
+  function pisoMasUrgente(tower) {
     let best = null, peor = Infinity;
-    for (const f of playerTower.floors) {
+    for (const f of (tower || playerTower).floors) {
       if (!valeReparar(f)) continue;
       const pct = f.hp / f.maxHp;
       if (pct < peor) { peor = pct; best = f; }
@@ -788,7 +815,7 @@
       DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
       return;
     }
-    aplicarReparacion(f);
+    aplicarReparacion(playerTower, playerEnergy, f, true);
   }
 
   function hitDefenseButton(x, y) {
@@ -809,21 +836,26 @@
       DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
       return true;
     }
-    return aplicarReparacion(floor);
+    return aplicarReparacion(playerTower, playerEnergy, floor, true);
   }
 
   // Compartido por el toque sobre el piso y por el boton de la derecha.
-  function aplicarReparacion(floor) {
-    const curado = DF.Tower2.repairFloor(playerTower, floor, REPAIR_AMOUNT);
+  // Sirve para las dos torres: desde la it.7 la IA tambien repara. La
+  // asimetria anterior era grande y silenciosa -- el jugador gastaba ~13% de
+  // su energia reparando y el rival no reparaba nunca, o sea competia con una
+  // herramienta menos. Darsela es lo simetrico; el elastico de regalarle
+  // punteria cuando va perdiendo, no.
+  function aplicarReparacion(tower, energy, floor, esJugador) {
+    const curado = DF.Tower2.repairFloor(tower, floor, REPAIR_AMOUNT);
     if (curado <= 0) return false;
-    playerEnergy.value = Math.max(0, playerEnergy.value - REPAIR_COST);
+    energy.value = Math.max(0, energy.value - REPAIR_COST);
     floor.repairFlashAt = performance.now();
     DF.Sfx.playRepair();
     hitMarks.push({
-      x: playerTower.originX + floor.width / 2, y: floor.y,
+      x: tower.originX + floor.width / 2, y: floor.y,
       at: performance.now(), duracion: 700, calidad: 0.5, texto: '+' + Math.round(curado)
     });
-    DF.Telemetry.log('repair', {
+    DF.Telemetry.log(esJugador ? 'repair' : 'ai_repair', {
       duelIndex: duelIndex, energia: REPAIR_COST, curado: +curado.toFixed(1),
       material: floor.material || floor.role,
       techoRestantePct: +(floor.repairCeiling / floor.maxHp).toFixed(3)
@@ -983,7 +1015,7 @@
         const target = aiPending.target;
         if (target && target.alive && !target.collapsing) {
           const c = floorCenter(playerTower, target);
-          const v0 = apuntarPorSimulacion(aiPending.weaponKey, aiMuzzle, c);
+          const v0 = apuntarPorSimulacion(aiPending.weaponKey, aiMuzzle, objetivoConDispersion(c));
           if (!v0) { aiPending = null; return; }
           const v = DF.TowerProjectile2.initialVelocity(aiPending.weaponKey, v0.vx, v0.vy);
           gastar(aiEnergy, aiPending.weaponKey);
@@ -997,6 +1029,24 @@
       return;
     }
     if (nowMs - aiLastShotAt < AI_MIN_INTERVAL_MS) return;
+
+    // La IA repara. Misma regla que el jugador -- el piso mas urgente, mismo
+    // costo -- y le cuesta el turno, igual que a el: reparar es en vez de
+    // disparar. Umbral al 60% de vida para que no gaste el turno por un
+    // rasguño. Medido en el simulador de duelo completo: alarga los duelos de
+    // ~87 s a ~101 s (el criterio C3 pide 120-210) y le BAJA un poco las
+    // victorias, porque cada reparacion es un disparo que no hace. Se elige
+    // igual: la asimetria de que el rival no tuviera la herramienta era mas
+    // grande que el efecto.
+    if (DF.Tower2.totalHpPercent(aiTower) < 0.6 && aiEnergy.value >= REPAIR_COST) {
+      const piso = pisoMasUrgente(aiTower);
+      if (piso && Math.random() < 0.5) {
+        if (aplicarReparacion(aiTower, aiEnergy, piso, false)) {
+          aiLastShotAt = nowMs;   // le cuesta el turno
+          return;
+        }
+      }
+    }
 
     // La IA ESPERA por el arma que eligio. El comentario de armaDeLaIA decia
     // que ya lo hacia y no era cierto: `puedeDisparar` devolvia null y en el
@@ -1342,7 +1392,10 @@
       proyectilInterceptable: proyectilInterceptable,
       interceptCooldown: interceptCooldown,
       armaDeLaIA: armaDeLaIA,
+      updateAI: updateAI,
       apuntarPorSimulacion: apuntarPorSimulacion,
+      objetivoConDispersion: objetivoConDispersion,
+      AI_DISPERSION_PX: AI_DISPERSION_PX,
       WIND_MAX: WIND_MAX,
       LAYOUT: LAYOUT
     }

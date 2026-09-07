@@ -86,6 +86,20 @@
 <canvas id="game-canvas"></canvas>
 <button id="log-btn" hidden aria-label="Panel de sesión">≡</button>
 
+<!-- Bloqueo de orientación (NFR8). El juego se diseña en horizontal: en
+     vertical las gomeras quedan a 140 px contra 470 y el arco casi no importa,
+     así que son dos juegos distintos. El log de la sesión 7 tenía un duelo de
+     cada tipo, y con eso ningún número era comparable. Se pide el bloqueo real
+     al navegador, y este cartel es la red de seguridad para cuando el
+     navegador no lo permite (iPhone, o fullscreen rechazado). -->
+<div class="overlay" id="rotate-overlay" hidden>
+  <div class="card" style="text-align:center">
+    <h1>Girá el teléfono</h1>
+    <p class="sub" style="margin-bottom:0">Este duelo se juega en horizontal. En vertical las torres
+      quedan demasiado cerca y el tiro deja de tener arco.</p>
+  </div>
+</div>
+
 <!-- Inicio de sesión: captura A1 (apertura espontánea), A4 (ganas antes) y
      A2 (cuántos duelos te proponías) antes del primer disparo. -->
 <div class="overlay" id="start-overlay">
@@ -241,12 +255,37 @@
   function pedirPantallaCompleta() {
     const el = document.documentElement;
     const fn = el.requestFullscreen || el.webkitRequestFullscreen;
-    if (!fn) return;
+    if (!fn) { bloquearHorizontal(); return; }
     try {
       const p = fn.call(el);
-      if (p && p.catch) p.catch(function () { /* el usuario o el navegador dijo que no */ });
+      // El bloqueo de orientación solo se puede pedir DESPUÉS de estar en
+      // pantalla completa, y solo en Android. Si falla, queda el cartel.
+      if (p && p.then) p.then(bloquearHorizontal, function () { /* dijo que no */ });
+      else bloquearHorizontal();
     } catch (e) { /* idem */ }
   }
+
+  function bloquearHorizontal() {
+    const o = screen.orientation;
+    if (!o || !o.lock) return;
+    try {
+      const p = o.lock('landscape');
+      if (p && p.catch) p.catch(function () { /* el navegador no deja: queda el cartel */ });
+    } catch (e) { /* idem */ }
+  }
+
+  // Red de seguridad: si el bloqueo no se pudo aplicar y el teléfono está en
+  // vertical, se tapa el juego. No se pausa el duelo a propósito -- girar el
+  // teléfono lleva un segundo, y meter una pausa acá agregaría estados nuevos
+  // (y bugs) a cambio de casi nada.
+  const rotateOverlay = document.getElementById('rotate-overlay');
+  function revisarOrientacion() {
+    const vertical = window.innerHeight > window.innerWidth;
+    rotateOverlay.hidden = !(vertical && startOverlay.hidden);
+  }
+  window.addEventListener('resize', revisarOrientacion);
+  window.addEventListener('orientationchange', revisarOrientacion);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', revisarOrientacion);
 
   btnStart.addEventListener('click', function () {
     pedirPantallaCompleta();
@@ -257,6 +296,7 @@
     });
     startOverlay.hidden = true;
     logBtn.hidden = false;
+    revisarOrientacion();
     DF.Sfx.unlock(); // gesto real del usuario: habilita el audio del juego
     DF.TowerMain2.start();
   });
@@ -270,6 +310,7 @@
     startOverlay.hidden = true;
     logBtn.hidden = false;
     DF.TowerMain2.start();
+    revisarOrientacion();
     // Retomar no es un gesto del usuario, asi que el navegador rechazaria el
     // pedido de pantalla completa. Se engancha al primer toque de verdad.
     window.addEventListener('pointerdown', function unaVez() {
