@@ -31,11 +31,21 @@
   const FLOOR_H_MIN = 18;
   let FLOOR_H_CUR = FLOOR_H_MAX;
 
-  // El mundo vive ENTRE estas dos bandas, nunca debajo.
+  // El mundo vive ENTRE estas dos bandas, nunca debajo. La banda inferior
+  // crecio a 78 para alojar los dos botones de defensa de la derecha.
   const HUD_TOP = 44;
-  const HUD_BOTTOM = 62;
+  const HUD_BOTTOM = 78;
 
-  const LAYOUT = ['muro', 'torreta', 'muro', 'torreta', 'muro'];
+  // OCHO pisos (venia de cinco). No es solo para alargar el duelo -- que
+  // duraba 39 s contra un objetivo de 2-3 min y sube la vida total un 64%.
+  // El motivo principal es que los arquetipos necesitan ESPACIO VERTICAL para
+  // diferenciarse: con cinco pisos, "llega arriba" y "llega abajo" estaban a
+  // 200 px y la diferencia era sutil. Con ocho, el cohete y la granada atacan
+  // mundos distintos, y el orden en que se apilan los materiales empieza a
+  // importar de verdad -- que es el agujero que la auditoria marco en §1.4.
+  // Las dos torretas van en el medio, no en los extremos, para que haya que
+  // atravesar muro para llegarles.
+  const LAYOUT = ['muro', 'muro', 'torreta', 'muro', 'muro', 'torreta', 'muro', 'muro'];
 
   const STARTING_ENERGY = 51;
   const WIND_MAX = 260;
@@ -46,9 +56,19 @@
   const REPAIR_AMOUNT = 14;
   const REPAIR_MIN_USEFUL = REPAIR_AMOUNT * 0.5;
 
-  const INTERCEPT_WINDOW_MS = 400;
-  const INTERCEPT_TAP_RADIUS = 40;
+  // Ventana de intercepcion. Venia de 400 ms, que es el filo del papel: la
+  // reaccion humana simple es ~250 ms y con decision de por medio ~350. Con el
+  // gesto viejo (tocar el proyectil) era directamente injugable -- 1 acierto en
+  // 5 intentos, y dos de esos intentos fueron sobre proyectiles que ni siquiera
+  // iban a pegar. Con el boton fijo de la derecha, 700 ms es exigente pero
+  // jugable.
+  const INTERCEPT_WINDOW_MS = 700;
+  const INTERCEPT_TAP_RADIUS = 40;   // sigue valiendo tocar el proyectil directo
   const INTERCEPT_TRY_RADIUS = 60;
+  // Sin limite, un boton grande volveria la intercepcion automatica y aburrida.
+  // Con cooldown, la IA dispara mas seguido de lo que se puede frenar y aparece
+  // la decision real: cual parás. Sigue sin costar energia (FR30).
+  const INTERCEPT_COOLDOWN_MS = 3500;
   const ETA_REFRESH_MS = 150;
 
   const ROUND_LIMIT_MS = 180000;
@@ -98,6 +118,15 @@
   let aiPending = null;   // { at, weaponKey, target }
   let lastStretchStep = -1;
   let previewPoints = null;
+  // Botones de defensa, abajo a la derecha: son para el pulgar DERECHO, que
+  // hasta ahora no hacia nada. Todo el juego vivia en el pulgar izquierdo --
+  // la gomera, reparar y interceptar caian los tres sobre la torre propia, en
+  // la misma esquina y con el mismo dedo.
+  let defenseButtons = null;
+  let interceptReadyAt = 0;
+  // Cartel grande al cambiar de arma: el rol estaba en gris de 10 px abajo y
+  // nadie lo leia. "No termino de entender para que sirve un arma u otra."
+  let weaponToast = null;
 
   function triggerShake(mag) { shakeMag = Math.max(shakeMag, mag); }
 
@@ -217,14 +246,22 @@
     playerMuzzle.y = my;
     aiMuzzle = { x: aiTower.originX - MUZZLE_PAD, y: my, disparoAt: aiMuzzle.disparoAt };
 
-    // Seis botones: el ancho sale del espacio disponible, no de un fijo.
+    // Banda inferior, de izquierda a derecha: energia + armas, despues el
+    // texto del arma, y a la derecha del todo los dos botones de defensa.
     const n = DF.Weapons.ORDER.length;
     const gap = 4;
-    const anchoTotal = Math.min(viewW * 0.54, n * 46 + (n - 1) * gap);
+    const anchoTotal = Math.min(viewW * 0.46, n * 44 + (n - 1) * gap);
     const bw = (anchoTotal - (n - 1) * gap) / n;
     weaponButtons = DF.Weapons.ORDER.map(function (key, i) {
-      return { key: key, x: 10 + i * (bw + gap), y: viewH - 32, w: bw, h: 27 };
+      return { key: key, x: 10 + i * (bw + gap), y: viewH - 58, w: bw, h: 26 };
     });
+
+    // 60 px de diametro: por encima del minimo comodo de toque en mobile.
+    const r = 30;
+    defenseButtons = {
+      interceptar: { x: viewW - 116, y: viewH - 40, r: r },
+      reparar:     { x: viewW - 46,  y: viewH - 40, r: r }
+    };
   }
 
   function spawnProjectile(x, y, vx, vy, owner, weaponKey) {
@@ -361,6 +398,21 @@
     });
   }
 
+  // Ranquea las armas que la IA puede pagar y elige entre las dos mejores.
+  function armaDeLaIA(floor) {
+    const opciones = DF.Weapons.ORDER
+      .filter(function (k) { return puedeDisparar(aiEnergy, k); })
+      .map(function (k) {
+        const w = DF.Weapons.WEAPONS[k];
+        const mul = floor.role === 'torreta' ? w.turretBonus : (w.materialMul[floor.material] || 1);
+        return { k: k, valor: w.baseDamage * mul };
+      })
+      .sort(function (a, b) { return b.valor - a.valor; });
+    if (!opciones.length) return null;
+    const top = opciones.slice(0, 2);
+    return top[Math.floor(Math.random() * top.length)].k;
+  }
+
   function randomAliveFloor(tower) {
     const vivos = tower.floors.filter(function (f) { return f.alive && !f.collapsing; });
     if (!vivos.length) return null;
@@ -439,6 +491,8 @@
     shakeMag = 0;
     flashMag = 0;
     weaponReadyAt = {};
+    interceptReadyAt = 0;
+    weaponToast = null;
     aiPending = null;
     playerWasDestroyed = false;
     aiWasDestroyed = false;
@@ -491,6 +545,73 @@
     return DF.Tower2.repairableAmount(floor) >= REPAIR_MIN_USEFUL;
   }
 
+  // --- Defensa con la mano derecha ---------------------------------------
+
+  function interceptCooldown() {
+    return Math.max(0, Math.min(1, (interceptReadyAt - performance.now()) / INTERCEPT_COOLDOWN_MS));
+  }
+
+  // El proyectil interceptable mas inminente. Con el boton no hay que apuntar:
+  // la habilidad pasa a ser CUANDO, no DONDE, que es lo que el diseño siempre
+  // dijo que era ("ventana de timing").
+  function proyectilInterceptable() {
+    let best = null;
+    for (const p of projectiles) {
+      if (p.owner !== 'ai' || !p.interceptable) continue;
+      if (!best || p.impactEtaMs < best.impactEtaMs) best = p;
+    }
+    return best;
+  }
+
+  // El piso propio mas urgente de reparar. La decision que importa es SI gastas
+  // energia en reparar en vez de disparar, no CUAL piso -- eso casi siempre es
+  // el mas roto. Sacar la eleccion tonta deja la interesante.
+  function pisoMasUrgente() {
+    let best = null, peor = Infinity;
+    for (const f of playerTower.floors) {
+      if (!valeReparar(f)) continue;
+      const pct = f.hp / f.maxHp;
+      if (pct < peor) { peor = pct; best = f; }
+    }
+    return best;
+  }
+
+  function apretarInterceptar() {
+    if (interceptCooldown() > 0) return;
+    const p = proyectilInterceptable();
+    DF.Telemetry.log('intercept_try', {
+      duelIndex: duelIndex, success: !!p, via: 'boton',
+      msAntesDeImpacto: p && isFinite(p.impactEtaMs) ? Math.round(p.impactEtaMs) : null,
+      enVuelo: projectiles.filter(function (q) { return q.owner === 'ai'; }).length
+    });
+    if (!p) return;
+    interceptReadyAt = performance.now() + INTERCEPT_COOLDOWN_MS;
+    spawnImpactParticles(p.x, p.y, { r: 255, g: 210, b: 63 }, 18, 0.9);
+    DF.Sfx.playIntercept();
+    triggerShake(6);
+    hitMarks.push({ x: p.x, y: p.y, at: performance.now(), duracion: 700, calidad: 1, texto: '¡AL VUELO!' });
+    projectiles.splice(projectiles.indexOf(p), 1);
+  }
+
+  function apretarReparar() {
+    const f = pisoMasUrgente();
+    if (!f) return;
+    if (playerEnergy.value < REPAIR_COST) {
+      DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
+      return;
+    }
+    aplicarReparacion(f);
+  }
+
+  function hitDefenseButton(x, y) {
+    if (!defenseButtons) return null;
+    for (const k in defenseButtons) {
+      const b = defenseButtons[k];
+      if (Math.hypot(x - b.x, y - b.y) <= b.r + 6) return k;
+    }
+    return null;
+  }
+
   function tryRepair(x, y) {
     if (Math.hypot(x - playerMuzzle.x, y - playerMuzzle.y) <= DF.Input.MUZZLE_GRAB_RADIUS) return false;
     const floor = DF.Tower2.findHitFloor(playerTower, x, y, 10);
@@ -500,6 +621,11 @@
       DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
       return true;
     }
+    return aplicarReparacion(floor);
+  }
+
+  // Compartido por el toque sobre el piso y por el boton de la derecha.
+  function aplicarReparacion(floor) {
     const curado = DF.Tower2.repairFloor(playerTower, floor, REPAIR_AMOUNT);
     if (curado <= 0) return false;
     playerEnergy.value = Math.max(0, playerEnergy.value - REPAIR_COST);
@@ -548,10 +674,21 @@
       DF.Sfx.unlock();
       if (state.phase !== 'playing') return;
 
+      // Los botones de defensa van primero: son el destino del pulgar derecho
+      // y no deben competir con nada.
+      const def = hitDefenseButton(x, y);
+      if (def) {
+        if (def === 'interceptar') apretarInterceptar(); else apretarReparar();
+        evt.preventDefault();
+        evt.stopImmediatePropagation();
+        return;
+      }
+
       const key = hitWeaponButton(x, y);
       if (key) {
         if (key !== currentWeaponKey) {
           DF.Telemetry.log('weapon_switch', { duelIndex: duelIndex, from: currentWeaponKey, to: key });
+          weaponToast = { key: key, at: performance.now() };
         }
         currentWeaponKey = key;
         evt.preventDefault();
@@ -566,6 +703,7 @@
       const f = DF.Weapons.ORDER.find(function (k) { return DF.Weapons.WEAPONS[k].key === evt.key; });
       if (f && f !== currentWeaponKey) {
         DF.Telemetry.log('weapon_switch', { duelIndex: duelIndex, from: currentWeaponKey, to: f });
+        weaponToast = { key: f, at: performance.now() };
         currentWeaponKey = f;
       }
     });
@@ -647,8 +785,13 @@
     }
     const target = randomAliveFloor(playerTower);
     if (!target) return;
-    const key = DF.Weapons.bestWeaponAgainst(target);
-    if (!puedeDisparar(aiEnergy, key)) return;
+    // Antes elegia SIEMPRE la mejor arma teorica contra ese material, sin
+    // variar: en la iteracion 1 tiro 94 granadas de 177 disparos, e insistio
+    // 67 veces con el mortero pese a acertar solo el 16% (sufria el mismo bug
+    // de alcance que el jugador). Ahora sortea entre sus dos mejores opciones
+    // disponibles, lo que la vuelve menos predecible sin hacerla mas certera.
+    const key = armaDeLaIA(target);
+    if (!key) return;
     aiPending = { at: nowMs, weaponKey: key, target: target };
     DF.Sfx.playAiTell();
   }
@@ -740,6 +883,9 @@
     if (state.phase === 'playing') {
       DF.TowerRender2.drawRepairHints(ctx, playerTower, playerEnergy.value >= REPAIR_COST, now, valeReparar);
     }
+    if (state.phase === 'playing') {
+      DF.TowerRender2.drawWeaponMarkers(ctx, aiTower, currentWeaponKey, now);
+    }
     DF.TowerRender2.drawParticles(ctx, particles);
 
     const arr = dragState();
@@ -771,8 +917,31 @@
     }
 
     // HUD sin shake.
-    DF.Render.drawEnergyBar(ctx, 12, viewH - 50, 120, 12, playerEnergy, 'Vos', 'left');
+    DF.Render.drawEnergyBar(ctx, 12, viewH - 74, 120, 11, playerEnergy, 'Vos', 'left');
     DF.Render.drawEnergyBar(ctx, viewW - 176, 20, 120, 12, aiEnergy, 'IA', 'right');
+
+    // Botones de defensa: el destino del pulgar derecho.
+    const objetivo = proyectilInterceptable();
+    DF.TowerRender2.drawDefenseButtons(ctx, defenseButtons, {
+      interceptar: {
+        armado: !!objetivo,
+        ventanaPct: objetivo && isFinite(objetivo.impactEtaMs)
+          ? Math.max(0, Math.min(1, objetivo.impactEtaMs / INTERCEPT_WINDOW_MS)) : 0,
+        cooldownPct: interceptCooldown()
+      },
+      reparar: {
+        hayAlgo: !!pisoMasUrgente(),
+        alcanzaEnergia: playerEnergy.value >= REPAIR_COST,
+        costo: REPAIR_COST
+      }
+    }, now);
+
+    if (weaponToast) {
+      const t = (now - weaponToast.at) / 1600;
+      if (t >= 1) weaponToast = null;
+      else DF.TowerRender2.drawWeaponToast(ctx, viewW, HUD_TOP, DF.Weapons.WEAPONS[weaponToast.key], t);
+    }
+
     drawWeaponButtons(ctx, now);
     drawWeaponInfo(ctx);
     drawMaterialLegend(ctx);
@@ -823,21 +992,26 @@
     const eff = DF.Weapons.effectivenessText(currentWeaponKey);
     const last = weaponButtons[weaponButtons.length - 1];
     const x = last ? last.x + last.w + 12 : 210;
+    // Corta antes de los botones de defensa, que viven en la esquina derecha.
+    const limite = (defenseButtons ? defenseButtons.interceptar.x - defenseButtons.interceptar.r : viewW) - 14;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, viewH - 78, Math.max(0, limite - x), 78);
+    ctx.clip();
     ctx.textAlign = 'left';
     ctx.fillStyle = DF.TowerRender2.UI.aim;
     ctx.font = 'bold 12px sans-serif';
-    ctx.fillText(w.label, x, viewH - 40);
+    ctx.fillText(w.label, x, viewH - 46);
     // El ROL es lo que hace que la eleccion sea espacial y no aritmetica.
     ctx.fillStyle = '#c9bda8';
     ctx.font = '10px sans-serif';
-    ctx.fillText(w.rol, x, viewH - 28);
-    const partes = [eff.strong, eff.weak, eff.splash].filter(Boolean).join('  ');
+    ctx.fillText(w.rol, x, viewH - 33);
+    const partes = [eff.strong, eff.weak, eff.splash].filter(Boolean).join('   ');
     if (partes) {
       ctx.fillStyle = '#9fd6a0';
-      ctx.fillText(partes, x, viewH - 16);
+      ctx.fillText(partes, x, viewH - 20);
     }
-    ctx.fillStyle = DF.TowerRender2.UI.repair;
-    ctx.fillText('Tocá un piso verde: reparar ' + REPAIR_COST + '⚡', x, viewH - 5);
+    ctx.restore();
   }
 
   function drawMaterialLegend(ctx) {
@@ -890,7 +1064,7 @@
     ctx.fillStyle = DF.TowerRender2.UI.repair;
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Tocá un piso con borde verde para repararlo', viewW / 2, HUD_TOP + 22);
+    ctx.fillText('🔧 abajo a la derecha repara el piso más dañado', viewW / 2, HUD_TOP + 22);
   }
 
   function onResize() { layout(); }
@@ -936,7 +1110,15 @@
       state: function () { return state; },
       setWeapon: function (k) { currentWeaponKey = k; },
       cooldownRestante: cooldownRestante,
-      weaponReadyAt: function () { return weaponReadyAt; }
+      weaponReadyAt: function () { return weaponReadyAt; },
+      defenseButtons: function () { return defenseButtons; },
+      apretarInterceptar: apretarInterceptar,
+      apretarReparar: apretarReparar,
+      pisoMasUrgente: pisoMasUrgente,
+      proyectilInterceptable: proyectilInterceptable,
+      interceptCooldown: interceptCooldown,
+      armaDeLaIA: armaDeLaIA,
+      LAYOUT: LAYOUT
     }
   };
 })(window.DF = window.DF || {});

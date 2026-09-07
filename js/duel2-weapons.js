@@ -110,10 +110,18 @@
       flavor: 'Sube muchisimo y cae a plomo.',
       rol: 'Pega DESDE ARRIBA, ignorando la silueta de la torre.',
       kind: 'mortero',
-      speedMul: 0.9, cost: 34, baseDamage: 22, cooldownMs: 1600,
+      speedMul: 0.95, cost: 34, baseDamage: 22, cooldownMs: 1600,
       splash: true, preview: true,
       // Reparte el arrastre: mucho hacia arriba, poco hacia adelante.
-      arcoVertical: 1.5, arcoHorizontal: 0.6, gravedadCaida: 1.3,
+      //
+      // `arcoHorizontal` valia 0.6 y eso le recortaba el 40% del empuje hacia
+      // adelante: medido en la iteracion 1, su alcance MAXIMO a potencia plena
+      // y barriendo todos los angulos era de 581 px contra 582 que hay hasta la
+      // torre rival. Le faltaba UN pixel: era matematicamente imposible de
+      // acertar, y por eso su punteria real fue 3 de 13 mientras el resto de
+      // las armas iba de 60% a 100%. Con 0.80 el alcance queda en ~720 px:
+      // llega, pero exige casi maxima potencia. Un tiro comprometido.
+      arcoVertical: 1.4, arcoHorizontal: 0.80, gravedadCaida: 1.3,
       windMul: 1.2,
       color: '#c9bda8', trail: 'humo',
       materialMul: { madera: 1.20, metal: 0.80, piedra: 1.35 },
@@ -127,7 +135,10 @@
       kind: 'rebote',
       speedMul: 1.1, cost: 24, baseDamage: 16, cooldownMs: 900,
       splash: true, preview: true,
-      rebotes: 2, reboteVertical: 0.55, reboteHorizontal: 0.8,
+      // Perdia 45% de la velocidad vertical en cada rebote y solo tenia dos:
+      // picaba y se moria antes de llegar a la torre. Ahora patina como piedra
+      // en el agua.
+      rebotes: 3, reboteVertical: 0.70, reboteHorizontal: 0.90,
       windMul: 1.0,
       color: '#5fd08a', trail: 'chispa',
       materialMul: { madera: 1.35, metal: 0.80, piedra: 0.85 },
@@ -139,13 +150,22 @@
       flavor: 'No explota en el primero: lo atraviesa.',
       rol: 'Hace que el ORDEN importe: si ponés blando adelante, regalás el paso.',
       kind: 'perfora',
-      speedMul: 1.3, cost: 40, baseDamage: 20, cooldownMs: 1800,
+      // Iteracion 1: se llevo el 47.7% de los disparos con una racha de 22
+      // seguidos -- peor que el arma dominante de la iteracion 0. No por
+      // acertar mas (68%, por debajo del cohete y el racimo) sino por pegar el
+      // doble: 20 de daño por dos pisos, mas un bonus de 1.3 contra torretas.
+      // Era el arma con mas daño Y la mas facil de apuntar.
+      //
+      // Ahora es CONDICIONAL: 14 por un solo piso (pesimo para 40 de energia)
+      // y 28 si atraviesa dos (muy bueno). Deja de ser el mejor siempre y pasa
+      // a premiar enfilar dos pisos, que es su identidad de diseño.
+      speedMul: 1.3, cost: 40, baseDamage: 14, cooldownMs: 2000,
       splash: false, preview: false,
-      pisosQueAtraviesa: 2, dañoAlSegundo: 0.55,
+      pisosQueAtraviesa: 2, dañoAlSegundo: 1.0,
       windMul: 0.7, // tenso y rapido: el viento casi no lo dobla
       color: '#ffd23f', trail: 'estela',
       materialMul: { madera: 1.30, metal: 1.10, piedra: 0.75 },
-      turretBonus: 1.3
+      turretBonus: 1.0
     },
 
     racimo: {

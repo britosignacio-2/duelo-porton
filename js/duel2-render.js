@@ -661,6 +661,129 @@
     });
   }
 
+  // --- Defensa con la mano derecha ----------------------------------------
+  // Dos botones fijos abajo a la derecha. El motivo no es comodidad: todo el
+  // juego vivia en el pulgar izquierdo -- la gomera, reparar y interceptar
+  // caian los tres sobre la torre propia, en la misma esquina y con el mismo
+  // dedo. Con un boton fijo, interceptar deja de ser un problema de punteria
+  // (tocar un objeto chico y rapido) y pasa a ser uno de TIMING, que es lo que
+  // el diseño siempre dijo que era. Y el boton ES el aviso: antes el destello
+  // estaba en el proyectil, lejos y tapado por la propia mano.
+  function drawDefenseButtons(ctx, botones, estado, nowMs) {
+    if (!botones) return;
+
+    function base(b, activo, apagado) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = activo ? 'rgba(255,210,63,0.20)' : 'rgba(36,16,5,0.72)';
+      ctx.fill();
+      ctx.lineWidth = activo ? 3 : 2;
+      ctx.strokeStyle = apagado ? 'rgba(255,255,255,0.16)'
+                                : (activo ? UI.aim : 'rgba(255,255,255,0.34)');
+      ctx.stroke();
+    }
+
+    // --- Interceptar ---
+    const bi = botones.interceptar;
+    const armado = estado.interceptar.armado && estado.interceptar.cooldownPct <= 0;
+    const pulso = 0.6 + 0.4 * Math.sin(nowMs / 90);
+    base(bi, armado, estado.interceptar.cooldownPct > 0);
+    if (armado) {
+      // Halo latiendo: se ve incluso con el ojo en la torre.
+      ctx.globalAlpha = 0.35 * pulso;
+      ctx.beginPath();
+      ctx.arc(bi.x, bi.y, bi.r + 6 + pulso * 4, 0, Math.PI * 2);
+      ctx.strokeStyle = UI.aim;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Anillo que se cierra: cuanto queda de ventana.
+      ctx.beginPath();
+      ctx.arc(bi.x, bi.y, bi.r - 5, -Math.PI / 2,
+              -Math.PI / 2 + Math.PI * 2 * estado.interceptar.ventanaPct);
+      ctx.strokeStyle = UI.aim;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    }
+    if (estado.interceptar.cooldownPct > 0) {
+      // Barrido de recarga.
+      ctx.beginPath();
+      ctx.moveTo(bi.x, bi.y);
+      ctx.arc(bi.x, bi.y, bi.r, -Math.PI / 2,
+              -Math.PI / 2 + Math.PI * 2 * (1 - estado.interceptar.cooldownPct));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.fill();
+    }
+    ctx.textAlign = 'center';
+    ctx.fillStyle = armado ? UI.aim : 'rgba(232,215,195,0.6)';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText('✋', bi.x, bi.y + 1);
+    ctx.font = '9px sans-serif';
+    ctx.fillText('PARAR', bi.x, bi.y + 16);
+
+    // --- Reparar ---
+    const br = botones.reparar;
+    const rDisp = estado.reparar.hayAlgo && estado.reparar.alcanzaEnergia;
+    base(br, false, !rDisp);
+    ctx.fillStyle = rDisp ? UI.repair : 'rgba(95,208,138,0.32)';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText('🔧', br.x, br.y + 1);
+    ctx.font = '9px sans-serif';
+    ctx.fillText(estado.reparar.costo + '⚡', br.x, br.y + 16);
+  }
+
+  // Marca en la torre rival contra que pisos el arma elegida es fuerte o floja.
+  // "No termino de entender para que sirve un arma u otra": la matriz existia
+  // solo como texto abstracto abajo. Aca se ve DONDE se toma la decision.
+  function drawWeaponMarkers(ctx, tower, weaponKey, nowMs) {
+    if (!DF.Weapons.daSenalDeMatchup(weaponKey)) return;
+    const pulso = 0.55 + 0.45 * Math.sin(nowMs / 400);
+    for (const f of tower.floors) {
+      if (!f.alive || f.collapsing) continue;
+      ensureRenderY(f);
+      // Mismo criterio que effectivenessText(), a proposito: si el texto dice
+      // "+ Metal/Piedra", la torre tiene que marcar metal Y piedra. Con un
+      // umbral normalizado (0.66) el material del medio caia en 0.64 y no se
+      // marcaba, asi que el cartel y la torre se contradecian.
+      const w = DF.Weapons.WEAPONS[weaponKey];
+      const mul = f.role === 'torreta' ? w.turretBonus : (w.materialMul[f.material] || 1);
+      if (mul >= 0.95 && mul <= 1.05) continue; // neutro: no se marca
+      const bueno = mul > 1.05;
+      const x = tower.originX + f.width + 7;
+      const y = f.renderY + f.height / 2;
+      ctx.save();
+      ctx.globalAlpha = bueno ? pulso : 0.5;
+      ctx.fillStyle = bueno ? '#9fe870' : '#ff8b8b';
+      ctx.beginPath();
+      if (bueno) {           // doble punta hacia el piso: "pegale aca"
+        ctx.moveTo(x + 9, y - 6); ctx.lineTo(x, y); ctx.lineTo(x + 9, y + 6);
+      } else {               // cruz chica: "aca no"
+        ctx.moveTo(x + 1, y - 4); ctx.lineTo(x + 7, y + 4);
+        ctx.lineTo(x + 5, y + 5); ctx.lineTo(x - 1, y - 3);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Cartel grande al cambiar de arma. El rol estaba en gris de 10 px al pie y
+  // nadie lo leia.
+  function drawWeaponToast(ctx, viewW, hudTop, weapon, t) {
+    const a = t < 0.15 ? t / 0.15 : (t > 0.75 ? (1 - t) / 0.25 : 1);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, a));
+    ctx.textAlign = 'center';
+    ctx.fillStyle = weapon.color;
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText(weapon.label, viewW / 2, hudTop + 40);
+    ctx.fillStyle = '#e8d7c3';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(weapon.rol, viewW / 2, hudTop + 58);
+    ctx.restore();
+  }
+
   DF.TowerRender2 = {
     UI: UI,
     OUTLINE: OUTLINE,
@@ -674,6 +797,9 @@
     drawProjectiles: drawProjectiles,
     drawSlingshot: drawSlingshot,
     drawHitMarks: drawHitMarks,
+    drawDefenseButtons: drawDefenseButtons,
+    drawWeaponMarkers: drawWeaponMarkers,
+    drawWeaponToast: drawWeaponToast,
     nivelDeRotura: nivelDeRotura
   };
 })(window.DF = window.DF || {});
