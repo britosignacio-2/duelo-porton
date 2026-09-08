@@ -856,6 +856,28 @@
     ctx.textBaseline = 'alphabetic';
   }
 
+  // Escudo chiquito del rival. Lleno = puede interceptar; se vacia mientras
+  // esta en enfriamiento. Naranja de torreta, que ya es el color del rival.
+  function drawShieldGauge(ctx, cx, cy, enfriamiento) {
+    const listo = enfriamiento <= 0;
+    const r = 7;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r * 0.85, cy - r * 0.45);
+    ctx.lineTo(cx + r * 0.85, cy + r * 0.35);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r * 0.85, cy + r * 0.35);
+    ctx.lineTo(cx - r * 0.85, cy - r * 0.45);
+    ctx.closePath();
+    ctx.fillStyle = listo ? 'rgba(209,82,31,0.85)' : 'rgba(209,82,31,0.18)';
+    ctx.fill();
+    ctx.strokeStyle = listo ? 'rgba(255,190,120,0.95)' : 'rgba(209,82,31,0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawAimArrow(ctx, startX, startY, vx, vy, maxSpeed, ok) {
     const speed = Math.hypot(vx, vy);
     const len = 26 + Math.min(1, speed / maxSpeed) * 90;
@@ -1027,6 +1049,7 @@
     drawTower: drawTower,
     drawAimArrow: drawAimArrow,
     drawPreview: drawPreview,
+    drawShieldGauge: drawShieldGauge,
     drawWindStreaks: drawWindStreaks,
     drawWindGauge: drawWindGauge,
     drawParticles: drawParticles,

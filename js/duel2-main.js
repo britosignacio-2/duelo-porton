@@ -132,6 +132,20 @@
   // Con cooldown, la IA dispara mas seguido de lo que se puede frenar y aparece
   // la decision real: cual parás. Sigue sin costar energia (FR30).
   const INTERCEPT_COOLDOWN_MS = 3500;
+  // FR33, decidido por el usuario el 2026-09-08: la IA tambien intercepta.
+  // El GDD avisaba que esto "rompe la curva de dificultad en cualquiera de los
+  // dos sentidos" y la medicion le dio la razon de manera brutal: con el ajuste
+  // de la it.8, darle intercepcion aunque sea suave -- frenando el 26% de los
+  // tiros del jugador -- llevaba a la IA de ganar el 32% de los duelos a ganar
+  // el 87%. Quitarle un cuarto del daño al jugador da vuelta el duelo entero.
+  //
+  // Por eso NO se suma encima: se PAGA. La IA cambia punteria por defensa (ver
+  // AI_DISPERSION_PX, recalibrado en la misma pasada). Es ademas un rival mas
+  // interesante: uno que acierta menos pero puede frenarte tiene contrajuego
+  // -- se le puede gastar el enfriamiento a proposito, y por eso su estado se
+  // muestra en el HUD.
+  const AI_INTERCEPT_COOLDOWN_MS = 6000;
+  const AI_INTERCEPT_CHANCE = 0.35;
   const ETA_REFRESH_MS = 150;
 
   const ROUND_LIMIT_MS = 180000;
@@ -201,11 +215,22 @@
   //
   // Sale del simulador de duelo completo (`tools/banco/duelo-completo.js`),
   // que modela a ESTE jugador con sus numeros medidos y apunta al objetivo de
-  // diseño de que la IA gane el 30-40% de los duelos. Recalibrado en la it.8
-  // junto con la curacion de reparar, con 400 duelos por punto:
-  //   55 px -> gana 35% · **60 px -> 37%** · 65 px -> 33%
-  // (el margen de error con 400 duelos es de unos 2,5 puntos).
-  const AI_DISPERSION_PX = 60;
+  // diseño de que la IA gane el 30-40% de los duelos.
+  //
+  // SUBIDO DE 60 A 160 EN LA it.9, y es el precio de que la IA intercepte
+  // (FR33). Con 60 px y escudo, la IA ganaba el 87% de los duelos: frenarle un
+  // cuarto del daño al jugador da vuelta el duelo entero. La intercepcion no
+  // se suma encima, se PAGA. Barrido con escudo puesto:
+  //   60 px -> gana 87% · 120 -> 55% · 140 -> 51% · **160 -> 36%** · 180 -> 28% · 200 -> 21%
+  //
+  // El rival que sale de aca es mejor que el de antes aunque acierte menos:
+  // 70% de punteria y capaz de frenarte, en vez de 95% y nada de defensa. Dos
+  // conductas en vez de una, y la segunda tiene contrajuego.
+  //
+  // Ojo con el numero: el simulador modela un jugador que NO se adapta al
+  // escudo. En la cancha vas a aprender a gastarle el enfriamiento, asi que lo
+  // esperable es que gane algo menos de 36%.
+  const AI_DISPERSION_PX = 160;
   // Registro de disparos: un gatillo, un evento. Ver duel2-shotlog.js.
   const shotLog = DF.ShotLog.createShotLog({
     log: function (type, data) { DF.Telemetry.log(type, data); },
@@ -248,6 +273,7 @@
   // la misma esquina y con el mismo dedo.
   let defenseButtons = null;
   let interceptReadyAt = 0;
+  let aiInterceptReadyAt = 0;
   // Cartel grande al cambiar de arma: el rol estaba en gris de 10 px abajo y
   // nadie lo leia. "No termino de entender para que sirve un arma u otra."
   let weaponToast = null;
@@ -711,6 +737,7 @@
     weaponReadyAt = {};
     aiLastShotAt = 0;
     interceptReadyAt = 0;
+    aiInterceptReadyAt = 0;
     weaponToast = null;
     aiPending = null;
     aiIntent = null;
@@ -1014,11 +1041,14 @@
     return Infinity;
   }
 
+  // Se calcula para los DOS lados: el del jugador alimenta su boton y su aviso,
+  // el de la IA alimenta su propia intercepcion (FR33).
   function updateInterceptWindows(nowMs) {
     for (const p of projectiles) {
-      if (p.owner !== 'ai') continue;
+      if (p.owner !== 'ai' && p.owner !== 'player') continue;
+      const objetivo = p.owner === 'ai' ? playerTower : aiTower;
       if (nowMs - p.etaFullAt >= ETA_REFRESH_MS) {
-        p.impactEtaMs = predictImpactMs(p, playerTower);
+        p.impactEtaMs = predictImpactMs(p, objetivo);
         p.etaFullAt = nowMs;
         p.etaTickAt = nowMs;
       } else if (isFinite(p.impactEtaMs)) {
@@ -1026,8 +1056,44 @@
         p.etaTickAt = nowMs;
       }
       const ahora = isFinite(p.impactEtaMs) && p.impactEtaMs <= INTERCEPT_WINDOW_MS;
-      if (ahora && !p.tellPlayed) { DF.Sfx.playInterceptReady(); p.tellPlayed = true; }
-      p.interceptable = ahora;
+      // El aviso sonoro y el halo son SOLO para lo que le viene al jugador: si
+      // sonaran tambien sus propios tiros, el tell dejaria de significar
+      // "peligro" y volveria a ser ruido.
+      if (p.owner === 'ai') {
+        if (ahora && !p.tellPlayed) { DF.Sfx.playInterceptReady(); p.tellPlayed = true; }
+        p.interceptable = ahora;
+      } else {
+        p.enVentana = ahora;
+      }
+    }
+  }
+
+  // La IA frena un proyectil del jugador. Se decide UNA sola vez por
+  // proyectil, apenas entra en ventana: si se sorteara cuadro a cuadro,
+  // terminaria interceptando siempre.
+  function updateAIIntercept(nowMs) {
+    if (nowMs < aiInterceptReadyAt) return;
+    for (const p of projectiles) {
+      if (p.owner !== 'player' || p.esFragmento || p.iaDecidio) continue;
+      if (!p.enVentana) continue;
+      p.iaDecidio = true;
+      if (Math.random() >= AI_INTERCEPT_CHANCE) continue;
+      aiInterceptReadyAt = nowMs + AI_INTERCEPT_COOLDOWN_MS;
+      spawnImpactParticles(p.x, p.y, { r: 209, g: 82, b: 31 }, 18, 0.9);
+      DF.Sfx.playIntercept();
+      triggerShake(5);
+      // Tiene que quedar clarisimo que lo frenaron y no que el tiro se
+      // evaporo. Leccion de la it.8: si el rival hace algo, tiene que verse.
+      hitMarks.push({
+        x: p.x, y: p.y, at: nowMs, duracion: 900, calidad: 1, texto: 'LA IA LO FRENÓ'
+      });
+      shotLog.cerrarUno(p.shotId, { interceptado: true });
+      DF.Telemetry.log('ai_intercept', {
+        duelIndex: duelIndex, weapon: p.weaponKey,
+        msAntesDeImpacto: isFinite(p.impactEtaMs) ? Math.round(p.impactEtaMs) : null
+      });
+      projectiles.splice(projectiles.indexOf(p), 1);
+      return;
     }
   }
 
@@ -1121,6 +1187,7 @@
       updateAI(now);
       updateProjectiles(dt);
       updateInterceptWindows(now);
+      updateAIIntercept(now);
       DF.Tower2.updateCollapses(playerTower, now);
       DF.Tower2.updateCollapses(aiTower, now);
 
@@ -1229,6 +1296,12 @@
     // HUD sin shake.
     DF.Render.drawEnergyBar(ctx, 12, viewH - 74, 120, 11, playerEnergy, 'Vos', 'left');
     DF.Render.drawEnergyBar(ctx, viewW - 176, 20, 120, 12, aiEnergy, 'IA', 'right');
+    // Escudo del rival: dice si puede frenarte un tiro AHORA. Sin esto, que te
+    // bloqueen un disparo es arbitrario; con esto es una decision -- se le
+    // puede gastar el enfriamiento con un tiro barato y despues pegar con el
+    // caro. Es el contrajuego que hace que FR33 sume en vez de castigar.
+    DF.TowerRender2.drawShieldGauge(ctx, viewW - 190, 26,
+      Math.max(0, Math.min(1, (aiInterceptReadyAt - performance.now()) / AI_INTERCEPT_COOLDOWN_MS)));
 
     // Botones de defensa: el destino del pulgar derecho.
     const objetivo = proyectilInterceptable();
@@ -1425,6 +1498,9 @@
       interceptCooldown: interceptCooldown,
       armaDeLaIA: armaDeLaIA,
       updateAI: updateAI,
+      updateInterceptWindows: updateInterceptWindows,
+      updateAIIntercept: updateAIIntercept,
+      AI_INTERCEPT_COOLDOWN_MS: AI_INTERCEPT_COOLDOWN_MS,
       apuntarPorSimulacion: apuntarPorSimulacion,
       objetivoConDispersion: objetivoConDispersion,
       AI_DISPERSION_PX: AI_DISPERSION_PX,
