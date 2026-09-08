@@ -760,6 +760,11 @@
       // sesiones -- ni contra el banco, que hay que correr en el mismo viewport.
       viewW: viewW, viewH: viewH,
       distanciaGomeras: Math.round(aiMuzzle.x - playerMuzzle.x),
+      // Se registra si el duelo se jugo de verdad en pantalla completa. El
+      // 2026-09-08 el usuario reporto que no la veia y hubo que deducir la
+      // causa leyendo codigo; con este campo, el log lo dice y el alto de piso
+      // deja de ser un misterio entre sesiones.
+      pantallaCompleta: !!(document.fullscreenElement || document.webkitFullscreenElement),
       materialesPropios: playerTower.floors.map(function (f) { return f.material || f.role; }),
       materialesRival: aiTower.floors.map(function (f) { return f.material || f.role; })
     });

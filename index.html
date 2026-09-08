@@ -252,17 +252,23 @@
   //
   // Solo se puede pedir dentro de un gesto real del usuario, y hay navegadores
   // (Safari en iPhone) donde directamente no existe: si falla, no pasa nada.
+  function enPantallaCompleta() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
   function pedirPantallaCompleta() {
+    if (enPantallaCompleta()) return;
     const el = document.documentElement;
     const fn = el.requestFullscreen || el.webkitRequestFullscreen;
     if (!fn) { bloquearHorizontal(); return; }
     try {
       const p = fn.call(el);
-      // El bloqueo de orientación solo se puede pedir DESPUÉS de estar en
-      // pantalla completa, y solo en Android. Si falla, queda el cartel.
-      if (p && p.then) p.then(bloquearHorizontal, function () { /* dijo que no */ });
-      else bloquearHorizontal();
+      if (p && p.catch) p.catch(function () { /* el usuario o el navegador dijo que no */ });
     } catch (e) { /* idem */ }
+    // El bloqueo de orientación va FUERA de la cadena de la promesa, en su
+    // propio turno: si `lock()` se porta raro en algún navegador, no puede
+    // arrastrar consigo al pedido de pantalla completa.
+    setTimeout(bloquearHorizontal, 0);
   }
 
   function bloquearHorizontal() {
@@ -273,6 +279,35 @@
       if (p && p.catch) p.catch(function () { /* el navegador no deja: queda el cartel */ });
     } catch (e) { /* idem */ }
   }
+
+  // DEFECTO ARREGLADO 2026-09-08. Reporte del usuario: "ya no se ve en modo
+  // pantalla completa, sigo viendo parte del navegador".
+  //
+  // La causa: en una sesión RETOMADA no hay botón "Empezar", así que el pedido
+  // de pantalla completa iba colgado del primer `pointerdown` de `window`, en
+  // fase de burbujeo. Y cuatro manejadores del canvas -- los botones de
+  // defensa, los de arma, interceptar por toque y reparar por toque -- llaman
+  // `stopImmediatePropagation()`. O sea que si el primer toque caía en
+  // cualquier parte del HUD, el evento se moría antes de llegar a `window` y
+  // **el pedido no se hacía nunca**. Y como el oyente se desenganchaba solo al
+  // primer disparo, un intento fallido tampoco se reintentaba.
+  //
+  // Dos arreglos: fase de CAPTURA (corre antes que el canvas, nadie lo puede
+  // frenar) y se RE-ARMA mientras no estemos en pantalla completa, incluso si
+  // se sale a mitad del duelo.
+  function armarPantallaCompleta() {
+    if (enPantallaCompleta()) return;
+    window.addEventListener('pointerdown', alTocar, true);
+  }
+  function alTocar() {
+    window.removeEventListener('pointerdown', alTocar, true);
+    pedirPantallaCompleta();
+    // Si el navegador lo negó, se vuelve a armar para el próximo toque.
+    setTimeout(armarPantallaCompleta, 400);
+  }
+  document.addEventListener('fullscreenchange', function () {
+    if (!enPantallaCompleta()) armarPantallaCompleta();
+  });
 
   // Red de seguridad: si el bloqueo no se pudo aplicar y el teléfono está en
   // vertical, se tapa el juego. No se pausa el duelo a propósito -- girar el
@@ -289,6 +324,7 @@
 
   btnStart.addEventListener('click', function () {
     pedirPantallaCompleta();
+    armarPantallaCompleta();
     DF.Telemetry.startSession({
       prompted: answers.prompted,
       ganasAntes: answers.ganas,
@@ -311,12 +347,9 @@
     logBtn.hidden = false;
     DF.TowerMain2.start();
     revisarOrientacion();
-    // Retomar no es un gesto del usuario, asi que el navegador rechazaria el
-    // pedido de pantalla completa. Se engancha al primer toque de verdad.
-    window.addEventListener('pointerdown', function unaVez() {
-      window.removeEventListener('pointerdown', unaVez);
-      pedirPantallaCompleta();
-    }, { once: false });
+    // Retomar no es un gesto del usuario, así que el navegador rechazaría el
+    // pedido. Se engancha al primer toque de verdad, en fase de captura.
+    armarPantallaCompleta();
   }
 
   logBtn.addEventListener('click', function () { logOverlay.hidden = false; });
