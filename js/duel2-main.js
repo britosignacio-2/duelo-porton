@@ -146,6 +146,22 @@
   // muestra en el HUD.
   const AI_INTERCEPT_COOLDOWN_MS = 6000;
   const AI_INTERCEPT_CHANCE = 0.35;
+  // Cuando la IA "nota" el proyectil y decide. Reporte del usuario, exacto:
+  // "estaria bueno que la intercepcion sea mas cuando el proyectil este por
+  // llegar a su torre, y no apenas sale mi disparo". Medido en el log: decidia
+  // a 700-458 ms del impacto, casi siempre pegado al filo de la ventana de
+  // 700 ms -- es decir, apenas el tiro entraba en rango de ser interceptable.
+  // Para un perforador de vuelo corto (~600 ms) eso es virtualmente "al
+  // salir". Bajado a 300 ms, la mitad de la reaccion humana CON decision (ver
+  // el comentario de INTERCEPT_WINDOW_MS): la IA reacciona un poco mejor que
+  // una persona, pero deja de ser clarividente.
+  //
+  // Medido que no rompe la calibracion de la it.9: el vuelo tipico de un tiro
+  // aprendido va de ~600 ms (perforador) a ~1700 ms (cohete/mortero/granada,
+  // `tools/banco/banco.js` + medicion manual) -- 300 ms sigue cayendo DENTRO
+  // del vuelo en todos los casos, asi que la IA sigue teniendo la misma
+  // oportunidad de interceptar cada tiro; solo lo hace mas tarde.
+  const AI_INTERCEPT_REACT_MS = 300;
   const ETA_REFRESH_MS = 150;
 
   const ROUND_LIMIT_MS = 180000;
@@ -1060,15 +1076,14 @@
         p.impactEtaMs -= (nowMs - p.etaTickAt);
         p.etaTickAt = nowMs;
       }
-      const ahora = isFinite(p.impactEtaMs) && p.impactEtaMs <= INTERCEPT_WINDOW_MS;
       // El aviso sonoro y el halo son SOLO para lo que le viene al jugador: si
       // sonaran tambien sus propios tiros, el tell dejaria de significar
-      // "peligro" y volveria a ser ruido.
+      // "peligro" y volveria a ser ruido. Los tiros del jugador no necesitan
+      // marcar nada aca -- updateAIIntercept lee `impactEtaMs` directo.
       if (p.owner === 'ai') {
+        const ahora = isFinite(p.impactEtaMs) && p.impactEtaMs <= INTERCEPT_WINDOW_MS;
         if (ahora && !p.tellPlayed) { DF.Sfx.playInterceptReady(); p.tellPlayed = true; }
         p.interceptable = ahora;
-      } else {
-        p.enVentana = ahora;
       }
     }
   }
@@ -1080,7 +1095,7 @@
     if (nowMs < aiInterceptReadyAt) return;
     for (const p of projectiles) {
       if (p.owner !== 'player' || p.esFragmento || p.iaDecidio) continue;
-      if (!p.enVentana) continue;
+      if (!isFinite(p.impactEtaMs) || p.impactEtaMs > AI_INTERCEPT_REACT_MS) continue;
       p.iaDecidio = true;
       if (Math.random() >= AI_INTERCEPT_CHANCE) continue;
       aiInterceptReadyAt = nowMs + AI_INTERCEPT_COOLDOWN_MS;
@@ -1174,10 +1189,32 @@
     DF.Sfx.playAiTell();
   }
 
+  // Techo del hueco entre cuadros que se considera juego real. Por encima de
+  // esto, requestAnimationFrame dejo de llamarse -- pestaña en segundo plano,
+  // pantalla bloqueada, cambio de apps -- y no hubo ningun cuadro real ahi
+  // adentro, sea cual sea la causa.
+  const PAUSE_GAP_MS = 1000;
+
   function frame(ts) {
     if (lastT === null) lastT = ts;
-    let dt = (ts - lastT) / 1000;
+    const gapMs = ts - lastT;
     lastT = ts;
+    // DEFECTO ARREGLADO 2026-09-08. El log del usuario tenia un duelo resuelto
+    // por `timeout` a los 4636 SEGUNDOS (77 min) con las dos torres casi
+    // intactas -- nadie jugo 77 minutos, la pestaña quedo en pausa y
+    // `onHidden` no disparo (depende de `visibilitychange`, que no todos los
+    // navegadores mandan en todos los flujos: pantalla bloqueada sin cambiar
+    // de app, por ejemplo). El reloj del duelo usa `performance.now()`, que
+    // sigue corriendo aunque rAF este pausado, asi que el hueco se colaba
+    // entero en `elapsed` y el duelo "terminaba" con un timeout fantasma.
+    //
+    // Este arreglo no depende de ningun evento del navegador: si el hueco
+    // REAL entre dos cuadros es mayor a lo que un frame de juego puede tardar,
+    // se corre el reloj del duelo por ese hueco, como si el tiempo ahi adentro
+    // no hubiera pasado. `dt` (el paso de fisica) ya estaba clampeado a 33 ms
+    // por otro motivo (anti-tunneling); esto hace lo mismo para el reloj.
+    if (gapMs > PAUSE_GAP_MS) roundStartMs += gapMs;
+    let dt = gapMs / 1000;
     dt = Math.max(0, Math.min(dt, 0.033));
     const now = performance.now();
 
