@@ -84,6 +84,119 @@
   // balanceo]`; esto es la primera respuesta medida a esa asuncion.
   const LAYOUT = ['muro', 'muro', 'torreta', 'muro', 'muro'];
 
+  // --- CATALOGO DE FORTALEZAS RIVALES (capa 2 de Replayability) -------------
+  //
+  // POR QUE EXISTE, y es el hallazgo mas importante del proyecto hasta hoy.
+  // El 2026-09-08 cinco personas ajenas jugaron el build por primera vez. Los
+  // tres criterios del Porton D aprobaron 5 de 5 -- abrieron, entendieron,
+  // jugaron varios duelos seguidos sin que nadie los empujara. Y despues
+  // dijeron: **"despues de 2 o 3 duelos ya se vuelve repetitivo y quizas hasta
+  // aburrido. Siempre lo mismo."**
+  //
+  // El gate no podia ver eso: D1/D2/D3 miden los primeros diez minutos y el
+  // hallazgo llego en el minuto quince.
+  //
+  // Lo que refuta con evidencia externa: **la capa 1 de Replayability como
+  // respuesta suficiente**. Viento por ronda + material variable + gomera de
+  // altura variable YA ESTABAN en ese build. Son la respuesta que el GDD tenia
+  // escrita contra "el arrastre correcto es uno solo y se memoriza", y a los
+  // tres duelos la respuesta fue "siempre lo mismo".
+  //
+  // Diagnostico: construimos la varianza que MENOS cambia la partida. El
+  // viento y el material cambian COMO apuntas al mismo problema; un rival
+  // distinto cambia CUAL es el problema. Y hasta hoy `LAYOUT` era una
+  // constante: todas las fortalezas del juego eran la misma torre repintada.
+  // Los cinco testers jugaron la misma fortaleza tres veces con otro color.
+  //
+  // Este catalogo es la capa 2 ("el rival nunca es el mismo"), que estaba en
+  // CERO. No es trabajo descartable: es el catalogo de cold-start de la
+  // Epica 6, el primer contenido real del juego.
+  //
+  // REGLA DE DISEÑO: todas suman ~485 hp, igual que la torre base. Lo que
+  // cambia es la FORMA del problema, no su tamaño -- asi la duracion del duelo
+  // (criterio C3, 120-210 s) sigue calibrada y la unica variable es la forma.
+  // El reparto del 70% del alto disponible hace el resto: mas pisos = pisos
+  // mas finos = mas dificil elegir a cual pegarle (medido: 40 px -> 44%,
+  // 28 px -> 32%, 20 px -> 23%).
+  //
+  // `mat: null` = material al azar, como era antes. Un material FIJO en toda
+  // la torre es a proposito: con materiales aleatorios la señal de
+  // arma-vs-material es un puré (la calidad de eleccion dio 0,64, apenas por
+  // encima del azar 0,50). Una fortaleza monomaterial tiene UNA respuesta
+  // correcta y clara -- madera pide granada (1,35), metal pide cohete (1,35),
+  // piedra pide mortero (1,35). Es la prueba limpia de si el eje material
+  // produce una decision cuando no es ambiguo.
+  const FORTALEZAS = [
+    {
+      nombre: 'La Columna',
+      desc: 'La de siempre: cinco pisos, materiales mezclados.',
+      pisos: [
+        { role: 'muro', hp: 100 }, { role: 'muro', hp: 100 },
+        { role: 'torreta', hp: 85 },
+        { role: 'muro', hp: 100 }, { role: 'muro', hp: 100 }
+      ]
+    },
+    {
+      nombre: 'El Rascacielos',
+      desc: 'Siete pisos finos. Cuesta elegir a cual pegarle; el splash y el perforador se lucen.',
+      pisos: [
+        { role: 'muro', hp: 70 }, { role: 'muro', hp: 70 }, { role: 'muro', hp: 70 },
+        { role: 'torreta', hp: 65 },
+        { role: 'muro', hp: 70 }, { role: 'muro', hp: 70 }, { role: 'muro', hp: 70 }
+      ]
+    },
+    {
+      nombre: 'El Bunker',
+      desc: 'Tres pisos gordos. Blanco facil, pero cada piso es una pared: premia el daño por energia.',
+      pisos: [
+        { role: 'muro', hp: 170 }, { role: 'torreta', hp: 145 }, { role: 'muro', hp: 170 }
+      ]
+    },
+    {
+      nombre: 'El Panal',
+      desc: 'Pisos desparejos: algunos revientan de un par de tiros y otros aguantan. Elegir cual importa.',
+      pisos: [
+        { role: 'muro', hp: 60 }, { role: 'muro', hp: 120 },
+        { role: 'torreta', hp: 65 },
+        { role: 'muro', hp: 120 }, { role: 'muro', hp: 60 }, { role: 'muro', hp: 60 }
+      ]
+    },
+    {
+      nombre: 'El Astillero',
+      desc: 'Toda madera. Hay UNA respuesta correcta y se ve de lejos.',
+      pisos: [
+        { role: 'muro', hp: 97, mat: 'madera' }, { role: 'muro', hp: 97, mat: 'madera' },
+        { role: 'muro', hp: 97, mat: 'madera' }, { role: 'muro', hp: 97, mat: 'madera' },
+        { role: 'muro', hp: 97, mat: 'madera' }
+      ]
+    },
+    {
+      nombre: 'La Chapa',
+      desc: 'Todo metal. El cohete es el rey; la granada y el mortero rebotan.',
+      pisos: [
+        { role: 'muro', hp: 97, mat: 'metal' }, { role: 'muro', hp: 97, mat: 'metal' },
+        { role: 'muro', hp: 97, mat: 'metal' }, { role: 'muro', hp: 97, mat: 'metal' },
+        { role: 'muro', hp: 97, mat: 'metal' }
+      ]
+    },
+    {
+      nombre: 'El Paredon',
+      desc: 'Toda piedra. El mortero la desarma y el perforador se estrella.',
+      pisos: [
+        { role: 'muro', hp: 97, mat: 'piedra' }, { role: 'muro', hp: 97, mat: 'piedra' },
+        { role: 'muro', hp: 97, mat: 'piedra' }, { role: 'muro', hp: 97, mat: 'piedra' },
+        { role: 'muro', hp: 97, mat: 'piedra' }
+      ]
+    }
+  ];
+
+  // La fortaleza del JUGADOR queda fija en la base, a proposito: si cambian
+  // las dos, no se puede saber cual de las dos produjo el efecto. Se varia una
+  // sola variable por vez, que es la regla que viene funcionando todo el
+  // proyecto. Si la capa 2 resulta, variar tambien la propia es lo siguiente.
+  let fortalezaRival = FORTALEZAS[0];
+  let fortalezaIdx = -1;
+
   const STARTING_ENERGY = 51;
   // Bajado de 260. El desvio del viento crece con el CUADRADO del tiempo de
   // vuelo, asi que al alargar el vuelo ~30% en la iteracion 3 el viento se
@@ -345,24 +458,47 @@
     return l[Math.floor(Math.random() * l.length)];
   }
 
-  function buildFloors() {
-    return LAYOUT.map(function (r) {
+  function buildFloors(spec) {
+    const pisos = spec || FORTALEZAS[0].pisos;
+    return pisos.map(function (p) {
       return {
-        role: r,
-        material: r === 'muro' ? randomMaterial() : null,
-        maxHp: FLOOR_HP[r],
+        role: p.role,
+        // `mat` fijo = fortaleza monomaterial; null = al azar, como siempre.
+        material: p.role === 'muro' ? (p.mat || randomMaterial()) : null,
+        maxHp: p.hp || FLOOR_HP[p.role],
         width: FLOOR_W,
         height: FLOOR_H_CUR
       };
     });
   }
 
-  function buildTowers() {
-    playerTower = DF.Tower2.createTower({ floors: buildFloors(), originX: 0, groundY: 0 });
-    aiTower = DF.Tower2.createTower({ floors: buildFloors(), originX: 0, groundY: 0 });
+  // Sortea sin repetir la anterior: si el catalogo puede darte dos veces
+  // seguidas la misma fortaleza, el jugador ve "siempre lo mismo" justo en el
+  // duelo donde mas atento esta -- que es exactamente la queja que este
+  // catalogo vino a resolver.
+  function proximaFortaleza() {
+    if (FORTALEZAS.length < 2) return 0;
+    let i = fortalezaIdx;
+    while (i === fortalezaIdx) i = Math.floor(Math.random() * FORTALEZAS.length);
+    return i;
   }
 
-  function towerHeight() { return LAYOUT.length * FLOOR_H_CUR; }
+  function buildTowers() {
+    fortalezaIdx = proximaFortaleza();
+    fortalezaRival = FORTALEZAS[fortalezaIdx];
+    playerTower = DF.Tower2.createTower({ floors: buildFloors(FORTALEZAS[0].pisos), originX: 0, groundY: 0 });
+    aiTower = DF.Tower2.createTower({ floors: buildFloors(fortalezaRival.pisos), originX: 0, groundY: 0 });
+  }
+
+  // Con fortalezas de distinta cantidad de pisos, el reparto del alto se hace
+  // sobre la MAS ALTA para que las dos entren en pantalla. Consecuencia
+  // buscada: mas pisos = pisos mas finos = mas dificil elegir a cual pegarle.
+  function maxPisos() {
+    const a = playerTower ? playerTower.floors.length : LAYOUT.length;
+    const b = aiTower ? aiTower.floors.length : LAYOUT.length;
+    return Math.max(a, b);
+  }
+  function towerHeight() { return maxPisos() * FLOOR_H_CUR; }
 
   function viewportSize() {
     const vv = window.visualViewport;
@@ -387,7 +523,7 @@
     groundY = viewH - HUD_BOTTOM - 4;
     const availH = groundY - HUD_TOP;
     FLOOR_H_CUR = Math.max(FLOOR_H_MIN, Math.min(FLOOR_H_MAX,
-      Math.floor((availH * 0.70) / LAYOUT.length)));
+      Math.floor((availH * 0.70) / maxPisos())));
 
     const margin = Math.round(viewW * MARGIN_RATIO);
     const minGap = Math.max(viewW * MIN_GAP_RATIO, MIN_GAP_PX);
@@ -767,7 +903,12 @@
     duelIndex = DF.Telemetry.nextDuelIndex();
     duelLogged = false;
     DF.Telemetry.log('duel_start', {
-      duelIndex: duelIndex, preset: LAYOUT.join('-'),
+      duelIndex: duelIndex,
+      // Sin esto no se puede contestar la pregunta que motivo el catalogo:
+      // ¿el duelo se siente distinto segun contra quien jugas?
+      fortaleza: fortalezaRival.nombre,
+      pisosRival: aiTower.floors.length,
+      preset: aiTower.floors.map(function (f) { return f.material || f.role; }).join('-'),
       wind: Math.round(wind), muzzleHeight: +muzzleHeightFactor.toFixed(3),
       // La geometria cambia el juego mas que casi cualquier constante: a
       // 800x450 las gomeras quedan a 464 px y en un telefono vertical a 140,
@@ -1540,6 +1681,7 @@
       interceptCooldown: interceptCooldown,
       armaDeLaIA: armaDeLaIA,
       updateAI: updateAI,
+      resetGame: resetGame,
       updateInterceptWindows: updateInterceptWindows,
       updateAIIntercept: updateAIIntercept,
       AI_INTERCEPT_COOLDOWN_MS: AI_INTERCEPT_COOLDOWN_MS,
@@ -1547,7 +1689,9 @@
       objetivoConDispersion: objetivoConDispersion,
       AI_DISPERSION_PX: AI_DISPERSION_PX,
       WIND_MAX: WIND_MAX,
-      LAYOUT: LAYOUT
+      LAYOUT: LAYOUT,
+      FORTALEZAS: FORTALEZAS,
+      fortalezaRival: function () { return fortalezaRival; }
     }
   };
 })(window.DF = window.DF || {});
