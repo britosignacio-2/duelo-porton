@@ -472,15 +472,36 @@
     });
   }
 
-  // Sortea sin repetir la anterior: si el catalogo puede darte dos veces
-  // seguidas la misma fortaleza, el jugador ve "siempre lo mismo" justo en el
-  // duelo donde mas atento esta -- que es exactamente la queja que este
-  // catalogo vino a resolver.
+  // BOLSA, no sorteo (corregido 2026-09-11 con el log en la mano). La primera
+  // version sorteaba al azar sin repetir la anterior, y en la sesion de prueba
+  // salieron **4 fortalezas distintas en 7 duelos** -- Panal, Bunker, Chapa,
+  // Bunker, Panal, Chapa, Paredon. La Columna, el Rascacielos y el Astillero
+  // no aparecieron nunca. Con 7 opciones al azar eso es mala suerte normal,
+  // pero el problema que este catalogo vino a resolver es textual: "despues de
+  // 2 o 3 duelos se vuelve repetitivo". La ventana que hay que cuidar es
+  // justamente la de los primeros duelos, y ahi el azar no alcanza.
+  //
+  // Con bolsa (mismo truco que el Tetris moderno): se baraja el catalogo
+  // entero y se reparte sin reponer, asi los primeros 7 duelos son 7
+  // fortalezas DISTINTAS garantizadas. Al vaciarse se vuelve a barajar,
+  // evitando que la ultima de una bolsa y la primera de la siguiente sean la
+  // misma.
+  let bolsa = [];
   function proximaFortaleza() {
     if (FORTALEZAS.length < 2) return 0;
-    let i = fortalezaIdx;
-    while (i === fortalezaIdx) i = Math.floor(Math.random() * FORTALEZAS.length);
-    return i;
+    if (!bolsa.length) {
+      bolsa = FORTALEZAS.map(function (_, i) { return i; });
+      for (let i = bolsa.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = bolsa[i]; bolsa[i] = bolsa[j]; bolsa[j] = t;
+      }
+      // Si la primera de la bolsa nueva repite la ultima jugada, se manda al
+      // fondo: nunca dos iguales seguidas, ni siquiera cruzando bolsas.
+      if (bolsa[bolsa.length - 1] === fortalezaIdx) {
+        bolsa.unshift(bolsa.pop());
+      }
+    }
+    return bolsa.pop();
   }
 
   function buildTowers() {
