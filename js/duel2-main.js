@@ -52,6 +52,70 @@
 
   // El mundo vive ENTRE estas dos bandas, nunca debajo. La banda inferior
   // crecio a 78 para alojar los dos botones de defensa de la derecha.
+  // Zona de apuntado (pedido del usuario, 2026-09-14, jugandolo en el telefono).
+  // El apuntado libre se habia soltado a TODA la pantalla, y sobra: el juego se
+  // dispara con el pulgar izquierdo, que sostiene el telefono por ese borde y no
+  // llega comodo mas alla de la mitad del ancho en landscape. Todo lo que este a
+  // la derecha de este limite no es area util para apuntar -- es solo superficie
+  // donde un toque accidental puede nacer, justo del lado donde viven los dos
+  // botones de defensa. Coherente con la regla del proyecto: izquierda = ataque,
+  // derecha = defensa.
+  // Obstaculos de la arena (2026-09-14). Piezas NEUTRALES: no pertenecen a
+  // nadie y cualquiera de los dos puede romperlas -- idea del usuario, y es
+  // mejor que darle un escudo a cada torre, porque eso le habria regalado
+  // defensa nueva a una IA que ya viene perdiendo y obligaria a recalibrarla.
+  //
+  // Van en PAR ESPEJADO y no uno solo en el centro. Medido con
+  // `tools/banco/obstaculo.js`: en el centro la trayectoria esta en su punto
+  // mas alto, asi que un obstaculo ahi no cambia nada (el mortero se queda en
+  // 34% de tiros viables incluso con 160px). Cerca del blanco si muerde, y
+  // muerde distinto a cada arma -- la separacion se abre de 14% (racimo) a 76%
+  // (perforador), que es la decision de arma que se busca. El par es simetrico
+  // porque el de enfrente te estorba a vos y el de tu lado le estorba a el,
+  // que dispara al reves; medido, el castigo NO se acumula.
+  //
+  // La altura no es cosmetica: la gomera esta a ~108px del suelo, asi que por
+  // debajo de eso las armas tensas pasan volando y el obstaculo es adorno.
+  const OBS_ANCHO = 26;
+  const OBS_HP = 120;              // ~2-3 impactos: abrirse paso cuesta, pero es posible
+
+  // CATALOGO DE ARENAS (2026-09-14, pedido del usuario jugando: "la idea es que
+  // no siempre sea el mismo obstaculo y siempre en el mismo lugar").
+  //
+  // Cada arena se declara con las piezas de UN SOLO LADO y el motor genera el
+  // espejo. La simetria queda garantizada por construccion en vez de depender
+  // de que alguien escriba bien los dos lados -- que es exactamente el tipo de
+  // detalle que se desincroniza al agregar la sexta arena.
+  //
+  // `frac` = posicion en el tramo gomera-a-gomera (0.5 seria el centro, y el
+  // centro esta medido como el peor lugar: ahi la trayectoria esta en su punto
+  // mas alto y el obstaculo no cambia nada).
+  //
+  // Los COLGANTES invierten el matchup, y por eso son la pieza mas valiosa del
+  // catalogo: una columna apoyada castiga el tiro rasante y deja pasar el arco
+  // alto; una colgada hace lo contrario. No es "mas de lo mismo un poco mas
+  // dificil", es otro problema.
+  const ARENAS = [
+    { nombre: 'Descampado', piezas: [] },
+    { nombre: 'Columnas',   piezas: [{ frac: 0.20, alto: 110, anclaje: 'suelo', material: 'piedra' }] },
+    { nombre: 'Murallon',   piezas: [{ frac: 0.20, alto: 150, anclaje: 'suelo', material: 'piedra' }] },
+    // Colgantes a 65 y no 120: medido, a 120 el borde inferior queda en y=174
+    // con la gomera en y=200, asi que tapaba casi cualquier arco y dejaba a
+    // cuatro de las seis armas por debajo del 5% de tiros viables. Eso no es
+    // una arena dificil, es una arena rota. A 65 el pasillo de abajo respira y
+    // el que paga el precio es el arco alto, que es justo lo que se busca.
+    { nombre: 'Colgantes',  piezas: [{ frac: 0.20, alto: 65,  anclaje: 'aire',  material: 'metal' }] },
+    { nombre: 'Astillero',  piezas: [{ frac: 0.16, alto: 95,  anclaje: 'suelo', material: 'madera' },
+                                     { frac: 0.34, alto: 65,  anclaje: 'aire',  material: 'metal' }] },
+    { nombre: 'Dientes',    piezas: [{ frac: 0.12, alto: 130, anclaje: 'suelo', material: 'metal' },
+                                     { frac: 0.30, alto: 90,  anclaje: 'suelo', material: 'madera' }] }
+  ];
+  // Bolsa barajada sin reposicion, igual que las fortalezas: la ventana que
+  // importa es la de los primeros duelos, y el sorteo al azar repite ahi.
+  let bolsaArenas = [];
+  let arenaActual = null;
+
+  const ZONA_APUNTADO_RATIO = 0.70;
   const HUD_TOP = 44;
   const HUD_BOTTOM = 78;
 
@@ -305,6 +369,14 @@
   let playerTower, aiTower;
   let playerEnergy, aiEnergy;
   let playerMuzzle = { x: 0, y: 0 };
+  let obstaculos = [];
+  // Enseñanza contextual. Se persiste lo aprendido para no re-explicarle a
+  // alguien que ya jugo, pero vive en localStorage: cada tester externo abre en
+  // SU telefono y arranca con todas las lecciones pendientes, que es lo que el
+  // Porton D necesita medir.
+  const LECCIONES_KEY = 'df_lecciones_v1';
+  let lecciones = null;
+  let vioFaltaDeEnergia = false;
   let aiMuzzle = { x: 0, y: 0 };
   let groundY = 0;
   let projectiles = [];
@@ -529,6 +601,45 @@
     };
   }
 
+  // Coloca las piezas de la arena actual, espejadas respecto del centro. Se
+  // llama desde layout() para que sobrevivan a un giro de pantalla sin perder
+  // el daño ya recibido.
+  function colocarObstaculos() {
+    if (!arenaActual) return;
+    const tramo = aiMuzzle.x - playerMuzzle.x;
+    const centro = (playerMuzzle.x + aiMuzzle.x) / 2;
+    const techo = HUD_TOP + 10;
+    let k = 0;
+    arenaActual.piezas.forEach(function (def) {
+      const dx = tramo * (0.5 - def.frac);   // distancia al centro
+      [centro - dx, centro + dx].forEach(function (cx) {
+        const prev = obstaculos[k];
+        const o = prev || { hp: OBS_HP, maxHp: OBS_HP, alive: true };
+        o.material = def.material;
+        o.anclaje = def.anclaje;
+        o.w = OBS_ANCHO;
+        o.hMax = def.alto;
+        o.x = cx - OBS_ANCHO / 2;
+        o.yTop = techo;
+        DF.TowerProjectile2.resizeObstaculo(o, groundY);
+        obstaculos[k] = o;
+        k++;
+      });
+    });
+    obstaculos.length = k;
+  }
+
+  function sortearArena() {
+    if (!bolsaArenas.length) {
+      bolsaArenas = ARENAS.slice();
+      for (let i = bolsaArenas.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = bolsaArenas[i]; bolsaArenas[i] = bolsaArenas[j]; bolsaArenas[j] = t;
+      }
+    }
+    return bolsaArenas.pop();
+  }
+
   function layout() {
     const vp = viewportSize();
     viewW = vp.w;
@@ -589,6 +700,8 @@
     playerMuzzle.y = my;
     aiMuzzle = { x: aiTower.originX - MUZZLE_PAD, y: my, disparoAt: aiMuzzle.disparoAt };
 
+    colocarObstaculos();
+
     // Banda inferior, de izquierda a derecha: energia + armas, despues el
     // texto del arma, y a la derecha del todo los dos botones de defensa.
     const n = DF.Weapons.ORDER.length;
@@ -642,6 +755,35 @@
   }
 
   // --- Impacto -------------------------------------------------------------
+
+  // Daño a un obstaculo de la arena. Usa la MISMA regla de arma-vs-material que
+  // un muro (`computeDamage` sobre un piso ficticio del material del obstaculo),
+  // para que el jugador no tenga que aprender una segunda tabla: si el
+  // perforador es bueno contra metal, lo es contra el metal de la arena tambien.
+  function romperObstaculo(o, p, now) {
+    if (!o || !o.alive) return;
+    const w = DF.Weapons.WEAPONS[p.weaponKey];
+    const comoMuro = { material: o.material, role: 'muro' };
+    const dmg = DF.Weapons.computeDamage(p.weaponKey, comoMuro);
+    const calidad = DF.Weapons.matchupQuality(p.weaponKey, comoMuro);
+    const factor = (p.obstaculosGolpeados.length > 1) ? (w['dañoAlSegundo'] || 0.55) : 1;
+    const dmgFinal = dmg * factor;
+    o.hp = Math.max(0, o.hp - dmgFinal);
+    // El rect se achica CON el daño: el hueco que ve el jugador es un hueco de
+    // verdad por el que pasa el proximo tiro.
+    DF.TowerProjectile2.resizeObstaculo(o, groundY);
+
+    const rgb = materialRGB(comoMuro);
+    const roto = o.hp <= 0;
+    spawnImpactParticles(p.x, p.y, rgb, roto ? 16 : 7, roto ? 0.6 : 0.35);
+    DF.Sfx.playThud(roto ? 1 : 0.6, o.material, calidad);
+    hitMarks.push({ x: p.x, y: p.y, at: now, texto: String(Math.round(dmgFinal)) });
+    triggerShake(roto ? 7 : 3);
+    if (roto) {
+      o.alive = false;
+      DF.Telemetry.log('obstaculo_roto', { duelIndex: duelIndex, por: p.owner, arma: p.weaponKey });
+    }
+  }
 
   function resolverImpacto(p, floor, targetTower, now) {
     const w = DF.Weapons.WEAPONS[p.weaponKey];
@@ -711,7 +853,7 @@
       const p = projectiles[i];
       const targetTower = p.owner === 'player' ? aiTower : playerTower;
       const r = DF.TowerProjectile2.updateProjectileVsTower(p, dt, {
-        gravity: GRAVITY, wind: wind, targetTower: targetTower,
+        gravity: GRAVITY, wind: wind, targetTower: targetTower, obstaculos: obstaculos,
         bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
       });
 
@@ -722,6 +864,11 @@
         shotLog.impacto(p.shotId, r.floor, res.calidad);
         // El perforador SIGUE volando hacia el piso de atras: el disparo
         // todavia no termino, y por eso no se cierra el registro aca.
+        if (!r.sigue) { shotLog.cerrarUno(p.shotId); projectiles.splice(i, 1); }
+      } else if (r.hitObstaculo) {
+        const now = performance.now();
+        romperObstaculo(r.obstaculo, p, now);
+        // El perforador sigue de largo: el disparo no termino todavia.
         if (!r.sigue) { shotLog.cerrarUno(p.shotId); projectiles.splice(i, 1); }
       } else if (r.rebote) {
         DF.Sfx.playBounce();
@@ -777,13 +924,21 @@
         for (let i = 0; i < 300; i++) {
           // Torre vacia a proposito: se busca la distancia minima al PUNTO,
           // no el primer choque.
+          // Los obstaculos SI van en la simulacion: es lo que hace que la IA
+          // los esquive sola. No hay codigo de "evitar obstaculos" en ningun
+          // lado -- un tiro que choca corta la simulacion, queda con distancia
+          // minima grande y pierde contra otro que pasa. Es el mismo dividendo
+          // que dio apuntar por simulacion en la it.4: los seis arquetipos
+          // salieron gratis, y estos tambien.
           const r = DF.TowerProjectile2.updateProjectileVsTower(sim, 1 / 60, {
             gravity: GRAVITY, wind: wind, targetTower: { floors: [] },
+            obstaculos: obstaculos,
             bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
           });
           const d = Math.hypot(sim.x - objetivo.x, sim.y - objetivo.y);
           if (d < dmin) dmin = d;
           if (r.outOfBounds || r.divide) break;
+          if (r.hitObstaculo && !r.sigue) break;
         }
         if (!mejor || dmin < mejor.d) mejor = { d: dmin, ang: ang, S: S };
       }
@@ -899,6 +1054,11 @@
     wind = (Math.random() * 2 - 1) * WIND_MAX;
     muzzleHeightFactor = MUZZLE_HEIGHT_MIN + Math.random() * (MUZZLE_HEIGHT_MAX - MUZZLE_HEIGHT_MIN);
     buildTowers();
+    // Los obstaculos se rearman ENTEROS cada duelo: son parte de la arena, no
+    // un recurso que se gasta a lo largo de la sesion. Vaciar el array antes
+    // de `layout()` fuerza a que se reconstruyan en vez de reusarse rotos.
+    obstaculos = [];
+    arenaActual = sortearArena();
     layout();
     playerEnergy = DF.Energy.createEnergy({ value: STARTING_ENERGY });
     aiEnergy = DF.Energy.createEnergy({ value: 0 });
@@ -928,6 +1088,10 @@
       // Sin esto no se puede contestar la pregunta que motivo el catalogo:
       // ¿el duelo se siente distinto segun contra quien jugas?
       fortaleza: fortalezaRival.nombre,
+      // Misma razon que la fortaleza: sin registrarla no se puede contestar si
+      // la arena cambia como se juega el duelo.
+      arena: arenaActual ? arenaActual.nombre : 'n/d',
+      obstaculos: obstaculos.length,
       pisosRival: aiTower.floors.length,
       preset: aiTower.floors.map(function (f) { return f.material || f.role; }).join('-'),
       wind: Math.round(wind), muzzleHeight: +muzzleHeightFactor.toFixed(3),
@@ -1025,6 +1189,7 @@
     });
     if (!p) return;
     interceptReadyAt = performance.now() + INTERCEPT_COOLDOWN_MS;
+    aprendio('interceptar');
     spawnImpactParticles(p.x, p.y, { r: 255, g: 210, b: 63 }, 18, 0.9);
     DF.Sfx.playIntercept();
     triggerShake(6);
@@ -1041,6 +1206,18 @@
       return;
     }
     aplicarReparacion(playerTower, playerEnergy, f, true);
+  }
+
+  // El limite es el menor entre la fraccion de pantalla y el borde izquierdo de
+  // los botones de defensa: en una pantalla muy ancha el 70% podria alcanzarlos,
+  // y un arrastre que nace pegado a PARAR es exactamente el toque accidental que
+  // este limite viene a evitar.
+  function limiteZonaApuntado() {
+    const porFraccion = viewW * ZONA_APUNTADO_RATIO;
+    if (!defenseButtons) return porFraccion;
+    const bi = defenseButtons.interceptar, br = defenseButtons.reparar;
+    const bordeBotones = Math.min(bi.x - bi.r, br.x - br.r) - 16;
+    return Math.min(porFraccion, bordeBotones);
   }
 
   function hitDefenseButton(x, y) {
@@ -1073,6 +1250,7 @@
   function aplicarReparacion(tower, energy, floor, esJugador) {
     const curado = DF.Tower2.repairFloor(tower, floor, REPAIR_AMOUNT);
     if (curado <= 0) return false;
+    if (esJugador) aprendio('reparar');
     energy.value = Math.max(0, energy.value - REPAIR_COST);
     floor.repairFlashAt = performance.now();
     DF.Sfx.playRepair();
@@ -1115,10 +1293,13 @@
     const dt = 1 / 60;
     for (let i = 0; i < pasos; i++) {
       const r = DF.TowerProjectile2.updateProjectileVsTower(p, dt, {
-        gravity: GRAVITY, wind: wind, targetTower: aiTower,
+        gravity: GRAVITY, wind: wind, targetTower: aiTower, obstaculos: obstaculos,
         bounds: { width: viewW, height: viewH }, groundY: groundY, refSize: FLOOR_H_CUR
       });
       pts.push({ x: p.x, y: p.y });
+      // La previsualizacion tiene que CORTAR en el obstaculo: si la linea lo
+      // atraviesa, le esta mintiendo al jugador sobre donde termina el tiro.
+      if (r.hitObstaculo && !r.sigue) return { pts: pts, fin: r };
       if (r.hit || r.outOfBounds) return { pts: pts, fin: r };
       if (r.divide) return { pts: pts, fin: r };
     }
@@ -1168,6 +1349,7 @@
           weaponToast = { key: key, at: performance.now() };
         }
         currentWeaponKey = key;
+        aprendio('arma');
         evt.preventDefault();
         evt.stopImmediatePropagation();
         return;
@@ -1188,8 +1370,30 @@
     input = DF.Input.createInputController(canvas, {
       getMuzzle: function () { return playerMuzzle; },
       isPlaying: function () { return state.phase === 'playing'; },
+      // Apuntado libre (playtest externo 2026-09-14). El arrastre puede
+      // empezar en cualquier parte de la pantalla; el origen del tiro sigue
+      // siendo la gomera. Esto además descomprime el pulgar izquierdo: ya no
+      // hay que apoyar el dedo sobre la esquina donde vive el HUD.
+      //
+      // El router de gestos de arriba corre PRIMERO y corta con
+      // stopImmediatePropagation lo que le corresponde (botones, interceptar,
+      // reparar), así que en teoría acá alcanzaría con devolver true. Se
+      // rechazan igual las dos zonas de botones a mano: si mañana cambia el
+      // orden de los listeners, un arrastre fantasma naciendo debajo de un
+      // botón es un bug caro de encontrar y barato de prevenir.
+      puedeEmpezar: function (x, y) {
+        if (hitDefenseButton(x, y)) return false;
+        if (hitWeaponButton(x, y)) return false;
+        if (x > limiteZonaApuntado()) return false;
+        return true;
+      },
       canShoot: function () { return puedeDisparar(playerEnergy, currentWeaponKey); },
       onFire: function (vx, vy) {
+        // Aprender la energia no es "verla": es entender que se recarga sola.
+        // El gesto que lo prueba es lograr disparar DESPUES de que te faltara.
+        if (lecciones && !lecciones.yaAprendio('energia') && vioFaltaDeEnergia) {
+          aprendio('energia');
+        }
         const v = DF.TowerProjectile2.initialVelocity(currentWeaponKey, vx, vy);
         gastar(playerEnergy, currentWeaponKey);
         spawnProjectile(playerMuzzle.x, playerMuzzle.y, v.vx, v.vy, 'player', currentWeaponKey);
@@ -1199,6 +1403,7 @@
         previewPoints = null;
       },
       onInsufficientEnergy: function () {
+        vioFaltaDeEnergia = true;
         DF.Energy.flagInsufficient(playerEnergy, performance.now() / 1000);
       }
     });
@@ -1442,8 +1647,12 @@
     const v = DF.Input.velocityFromDrag(pv.startX, pv.startY, pv.currentX, pv.currentY);
     if (!v) return null;
     return {
-      dx: pv.currentX - playerMuzzle.x,
-      dy: pv.currentY - playerMuzzle.y,
+      // Desde el ANCLA, no desde la gomera: con apuntado libre el ancla es el
+      // punto que se toco, y la gomera tiene que tensarse segun cuanto se
+      // arrastro, no segun donde quedo el dedo en la pantalla. Cuando el ancla
+      // es la gomera (agarre de siempre) las dos formas dan lo mismo.
+      dx: pv.currentX - pv.startX,
+      dy: pv.currentY - pv.startY,
       potencia: Math.min(1, Math.hypot(v.vx, v.vy) / DF.Input.SPEED_MAX),
       v: v
     };
@@ -1461,6 +1670,7 @@
     DF.TowerRender2.drawWindStreaks(ctx, viewW, HUD_TOP + 6, groundY - 10, wind, WIND_MAX, now);
     DF.TowerRender2.drawTower(ctx, playerTower, now);
     DF.TowerRender2.drawTower(ctx, aiTower, now);
+    DF.TowerRender2.drawObstaculos(ctx, obstaculos, now);
     if (state.phase === 'playing') {
       DF.TowerRender2.drawRepairHints(ctx, playerTower, playerEnergy.value >= REPAIR_COST, now, valeReparar);
     }
@@ -1488,6 +1698,8 @@
     if (arr) {
       DF.TowerRender2.drawAimArrow(ctx, playerMuzzle.x, playerMuzzle.y,
         arr.v.vx, arr.v.vy, DF.Input.SPEED_MAX, puedeDisparar(playerEnergy, currentWeaponKey));
+    } else if (state.phase === 'playing' && input && input.enCancelacion()) {
+      DF.TowerRender2.drawCancelHint(ctx, playerMuzzle, DF.Input.MIN_DRAG_TO_FIRE, now);
     }
     DF.TowerRender2.drawHitMarks(ctx, hitMarks, now);
     ctx.restore();
@@ -1498,13 +1710,28 @@
     }
 
     // HUD sin shake.
-    DF.Render.drawEnergyBar(ctx, 12, viewH - 74, 120, 11, playerEnergy, 'Vos', 'left');
-    DF.Render.drawEnergyBar(ctx, viewW - 176, 20, 120, 12, aiEnergy, 'IA', 'right');
+    // La barra propia vivia abajo a la izquierda, y ahi es justo donde se apoya
+    // el pulgar de apuntar. Medido sobre cinco telefonos: el dedo tapaba ~41%
+    // de la barra en reposo y ~35% arrastrando, siempre la mitad izquierda, que
+    // es donde esta el relleno -- o sea tapaba justo la parte que informa.
+    // Playtest externo 2026-09-14: "para verla tenes que levantar el dedo y
+    // perdes tiempo". Movida arriba a la izquierda queda en 0% de oclusion y,
+    // de paso, simetrica con la del rival: las dos barras arriba, una en cada
+    // punta, se leen como un mismo recurso de los dos lados. Esa simetria
+    // ensena la mecanica sin gastar una linea de tutorial.
+    // Fila 1 de la franja superior: las dos barras de energia, simetricas.
+    // Etiqueta al costado y no arriba: la franja mide 44 px y abajo va la
+    // leyenda de materiales (fila 2). Apilando etiqueta-sobre-barra no entra
+    // -- se pisaron de verdad, visible en el telefono el 2026-09-14.
+    DF.Render.drawEnergyBar(ctx, 12, 10, 120, 12, playerEnergy, 'Vos', 'left',
+                            DF.Weapons.WEAPONS[currentWeaponKey].cost, true);
+    DF.Render.drawEnergyBar(ctx, viewW - 132, 10, 120, 12, aiEnergy, 'IA', 'right',
+                            0, true);
     // Escudo del rival: dice si puede frenarte un tiro AHORA. Sin esto, que te
     // bloqueen un disparo es arbitrario; con esto es una decision -- se le
     // puede gastar el enfriamiento con un tiro barato y despues pegar con el
     // caro. Es el contrajuego que hace que FR33 sume en vez de castigar.
-    DF.TowerRender2.drawShieldGauge(ctx, viewW - 190, 26,
+    DF.TowerRender2.drawShieldGauge(ctx, viewW - 178, 16,
       Math.max(0, Math.min(1, (aiInterceptReadyAt - performance.now()) / AI_INTERCEPT_COOLDOWN_MS)));
 
     // Botones de defensa: el destino del pulgar derecho.
@@ -1534,7 +1761,7 @@
     drawMaterialLegend(ctx);
     drawWindIndicator(ctx);
     drawTimer(ctx, now);
-    drawRepairTip(ctx);
+    drawLeccion(ctx, performance.now());
 
     if (state.phase === 'roundover' && now - state.roundoverAt > BANNER_DELAY_MS) {
       const txt = state.winner === 'player' ? '¡Ganaste!' : state.winner === 'ai' ? 'Ganó la IA' : 'Empate';
@@ -1604,7 +1831,7 @@
   function drawMaterialLegend(ctx) {
     const corto = viewW < 700;
     let x = 12;
-    const y = 10;
+    const y = 27;   // fila 2: arriba van las barras de energia (y=10..22)
     ctx.textAlign = 'left';
     ctx.font = '11px sans-serif';
     DF.Weapons.MATERIALS.forEach(function (m) {
@@ -1640,14 +1867,68 @@
     }
   }
 
-  function drawRepairTip(ctx) {
-    if (state.phase !== 'playing' || duelIndex > 2) return;
-    if (playerEnergy.value < REPAIR_COST) return;
-    if (!playerTower.floors.some(valeReparar)) return;
-    ctx.fillStyle = DF.TowerRender2.UI.repair;
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('🔧 abajo a la derecha repara el piso más dañado', viewW / 2, HUD_TOP + 22);
+  // Reemplaza al viejo `drawRepairTip`, que explicaba UNA sola mecanica y se
+  // apagaba en el duelo 3 usaras o no reparar. Las dos mecanicas que los cinco
+  // externos no entendieron -- energia e interceptar -- eran justo las que no
+  // tenian tip, y reparar, la unica que si lo tenia, no la reporto nadie.
+  function guardarLecciones() {
+    try { localStorage.setItem(LECCIONES_KEY, JSON.stringify(lecciones.exportar())); } catch (e) { }
+  }
+
+  function aprendio(id) {
+    if (!lecciones || lecciones.yaAprendio(id)) return;
+    lecciones.marcarAprendida(id);
+    guardarLecciones();
+    DF.Telemetry.log('leccion_aprendida', { duelIndex: duelIndex, leccion: id });
+  }
+
+  function drawLeccion(ctx, now) {
+    if (!lecciones || state.phase !== 'playing') return;
+    const hayInterceptable = projectiles.some(function (p) {
+      return p.owner === 'ai' && p.interceptable;
+    });
+    const L = lecciones.evaluar({
+      nowMs: now,
+      duelIndex: duelIndex,
+      hayInterceptable: hayInterceptable,
+      interceptarListo: interceptCooldown() <= 0,
+      faltoEnergia: playerEnergy.insufficientFlashUntil
+        && (now / 1000) < playerEnergy.insufficientFlashUntil,
+      hayQueReparar: playerTower.floors.some(valeReparar),
+      alcanzaReparar: playerEnergy.value >= REPAIR_COST,
+      puedeElegirArma: duelIndex >= 1
+    });
+    if (!L) return;
+
+    // Cada leccion se dibuja PEGADA a lo que explica: un cartel en el centro
+    // que habla de un boton de la esquina obliga a buscarlo, y la ventana de
+    // interceptar no da tiempo para buscar nada.
+    let x = viewW / 2, y = HUD_TOP + 22, align = 'center';
+    if (L.zona === 'defensa' && defenseButtons) {
+      x = defenseButtons.interceptar.x;
+      y = defenseButtons.interceptar.y - defenseButtons.interceptar.r - 14;
+      align = 'center';
+    } else if (L.zona === 'energia') {
+      x = 12; y = HUD_TOP + 18; align = 'left';
+    }
+
+    const pulso = L.urgente ? 0.65 + 0.35 * Math.sin(now / 90) : 1;
+    ctx.save();
+    ctx.font = L.urgente ? 'bold 13px sans-serif' : '12px sans-serif';
+    ctx.textAlign = align;
+    const w = ctx.measureText(L.texto).width;
+    const x0 = align === 'center' ? x - w / 2 - 8 : x - 6;
+    ctx.globalAlpha = 0.82 * pulso;
+    ctx.fillStyle = '#241005';
+    ctx.fillRect(x0, y - 13, w + 16, 19);
+    ctx.globalAlpha = pulso;
+    ctx.strokeStyle = L.urgente ? DF.TowerRender2.UI.aim : 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = L.urgente ? 2 : 1;
+    ctx.strokeRect(x0, y - 13, w + 16, 19);
+    ctx.fillStyle = L.urgente ? DF.TowerRender2.UI.aim
+                  : (L.id === 'reparar' ? DF.TowerRender2.UI.repair : '#e8d7c3');
+    ctx.fillText(L.texto, x, y);
+    ctx.restore();
   }
 
   function onResize() { layout(); }
@@ -1655,6 +1936,9 @@
   function start() {
     if (started) return;
     started = true;
+    let guardado = null;
+    try { guardado = JSON.parse(localStorage.getItem(LECCIONES_KEY) || 'null'); } catch (e) { }
+    lecciones = DF.Lecciones.crear(guardado);
     resetGame();
     setupInput();
     window.addEventListener('resize', onResize);

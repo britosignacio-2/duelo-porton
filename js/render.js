@@ -79,7 +79,13 @@
     }
   }
 
-  function drawEnergyBar(ctx, x, y, w, h, energy, label, align) {
+  // `costMark` (opcional) marca sobre la barra cuanto cuesta el arma elegida.
+  // Playtest externo 2026-09-08: "sin tutorial les costo entender la energia".
+  // El costo ya estaba escrito en cada boton de arma, pero la barra vivia lejos
+  // y habia que comparar dos lugares distintos de memoria. Con la marca encima,
+  // "cuanto tengo" y "cuanto necesito" se leen de un vistazo y en un solo lugar
+  // -- que es lo que un tutorial tendria que explicar con palabras.
+  function drawEnergyBar(ctx, x, y, w, h, energy, label, align, costMark, labelSide) {
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(x, y, w, h);
 
@@ -89,13 +95,46 @@
     const fillW = w * pct;
     ctx.fillRect(align === 'right' ? x + w - fillW : x, y, fillW, h);
 
+    if (costMark > 0 && costMark <= energy.max) {
+      const alcanza = energy.value >= costMark;
+      const mx = align === 'right'
+        ? x + w - w * (costMark / energy.max)
+        : x + w * (costMark / energy.max);
+      ctx.beginPath();
+      ctx.moveTo(mx, y - 2);
+      ctx.lineTo(mx, y + h + 2);
+      ctx.strokeStyle = alcanza ? '#ffd23f' : '#ff4d6d';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // Cuando no alcanza, el tramo que falta se raya: la barra dice sola
+      // cuanto hay que esperar en vez de solo negar el disparo.
+      if (!alcanza) {
+        ctx.save();
+        ctx.globalAlpha = 0.30;
+        ctx.fillStyle = '#ff4d6d';
+        const faltaW = w * ((costMark - energy.value) / energy.max);
+        ctx.fillRect(align === 'right' ? mx : x + fillW, y, faltaW, h);
+        ctx.restore();
+      }
+    }
+
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.strokeRect(x, y, w, h);
 
+    // `labelSide`: etiqueta al costado en vez de arriba. La franja superior del
+    // duelo mide 44 px y tiene que entrar la leyenda de materiales ademas de
+    // las dos barras; apilando etiqueta-sobre-barra no entra, y el resultado
+    // real fue que la leyenda y la barra se dibujaron una encima de la otra.
     ctx.fillStyle = '#e8ecff';
-    ctx.font = '13px sans-serif';
     ctx.textAlign = align === 'right' ? 'right' : 'left';
-    ctx.fillText(label, align === 'right' ? x + w : x, y - 6);
+    if (labelSide) {
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = align === 'right' ? 'right' : 'left';
+      ctx.fillText(label, align === 'right' ? x - 7 : x + w + 7, y + h - 2);
+    } else {
+      ctx.font = '13px sans-serif';
+      ctx.fillText(label, align === 'right' ? x + w : x, y - 6);
+    }
   }
 
   function drawBanner(ctx, canvas, text, subtext) {

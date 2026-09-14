@@ -57,6 +57,7 @@
       rebotesRestantes: w.rebotes || 0,
       pisosRestantes: w.pisosQueAtraviesa || 1,
       pisosGolpeados: [],
+      obstaculosGolpeados: [],
       esFragmento: !!cfg.esFragmento,
       yaSeDividio: !!cfg.esFragmento, // un fragmento no se vuelve a dividir
       // Estado del tell de intercepcion (lo maneja main).
@@ -115,8 +116,47 @@
     return (dx * dx + dy * dy) <= r * r;
   }
 
+  // Obstaculos de la arena (2026-09-14). Son rects neutrales: no pertenecen a
+  // nadie y cualquiera de los dos puede romperlos. Se chequean igual que un
+  // piso, con el mismo `circleRectOverlap`, para que la colision se comporte
+  // exactamente igual que la que ya esta calibrada.
+  // Ajusta el rect del obstaculo a lo que QUEDA EN PIE segun su vida.
+  //
+  // Existe porque la primera version tenia dos fuentes de verdad: el render
+  // dibujaba una silueta encogida y la colision seguia usando el rect entero.
+  // Resultado, reportado jugando: "ya rompiste la mitad del cuadrado, pasas un
+  // disparo por esa mitad rota y choca igual". El render le mostraba un hueco
+  // al jugador y la fisica no lo tenia. Ahora el rect ES la parte que queda, y
+  // el dibujo sale de ese mismo rect: no pueden volver a discrepar.
+  //
+  // La altura sigue a la vida de forma lineal a proposito -- es lo que el
+  // jugador espera al ver la silueta comerse desde arriba, y ademas hace que
+  // romperlo sirva progresivamente en vez de solo al final.
+  function resizeObstaculo(o, groundY) {
+    const vida = o.maxHp ? Math.max(0, o.hp) / o.maxHp : 1;
+    o.h = Math.max(6, o.hMax * vida);
+    // Los colgantes cuelgan de un techo invisible: se desmoronan desde ABAJO
+    // (se les cae el extremo libre) mientras los apoyados se comen desde
+    // arriba. En los dos casos el hueco crece del lado que el jugador espera.
+    if (o.anclaje === 'aire') o.y = o.yTop;
+    else o.y = groundY - o.h;
+    return o;
+  }
+
+  function findHitObstaculo(obstaculos, px, py, radius, excluidos) {
+    if (!obstaculos) return null;
+    for (let i = 0; i < obstaculos.length; i++) {
+      const o = obstaculos[i];
+      if (!o.alive) continue;
+      if (excluidos && excluidos.indexOf(o) !== -1) continue;
+      if (circleRectOverlap(px, py, radius, o)) return o;
+    }
+    return null;
+  }
+
   // Devuelve uno de:
   //   { hit: true, floor, sigue }   impacto (sigue=true si el perforador continua)
+  //   { hitObstaculo: true, obstaculo, sigue }  choque contra la arena
   //   { rebote: true, x, y }        pico en el suelo
   //   { divide: true }              el racimo llego al apice
   //   { outOfBounds: true }
@@ -128,6 +168,7 @@
     const bounds = opts.bounds;
     const groundY = opts.groundY;
     const refSize = opts.refSize || 40;
+    const obstaculos = opts.obstaculos;
     const w = DF.Weapons.WEAPONS[p.weaponKey];
 
     const speed = Math.hypot(p.vx, p.vy);
@@ -160,6 +201,18 @@
           p.vy *= 0.82;
         }
         return { hit: true, floor: hitFloor, sigue: sigue, golpeNumero: p.pisosGolpeados.length };
+      }
+
+      // Obstaculo de la arena. El perforador lo atraviesa igual que a un piso
+      // -- es su arquetipo, y hacer una excepcion aca lo convertiria en otra
+      // arma segun donde este parado.
+      const hitObs = findHitObstaculo(obstaculos, p.x, p.y, RADIUS, p.obstaculosGolpeados);
+      if (hitObs) {
+        p.obstaculosGolpeados.push(hitObs);
+        p.pisosRestantes--;
+        const sigueObs = p.kind === 'perfora' && p.pisosRestantes > 0;
+        if (sigueObs) { p.vx *= 0.82; p.vy *= 0.82; }
+        return { hitObstaculo: true, obstaculo: hitObs, sigue: sigueObs };
       }
 
       // Rebote en el suelo, antes del chequeo de fuera de rango.
@@ -225,6 +278,7 @@
     ESCALA_VELOCIDAD: ESCALA_VELOCIDAD,
     createProjectile: createProjectile,
     updateProjectileVsTower: updateProjectileVsTower,
+    resizeObstaculo: resizeObstaculo,
     splitCluster: splitCluster,
     initialVelocity: initialVelocity,
     stepProjectile: stepProjectile

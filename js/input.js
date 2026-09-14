@@ -6,10 +6,23 @@
 
   // Ask First (spec): valores exactos de balance/feel del arrastre. Ajustables acá.
   const MAX_DRAG = 170;          // px de arrastre que dan potencia máxima
-  const MIN_DRAG_TO_FIRE = 6;    // px, ignora taps accidentales / jitter
-  const MUZZLE_GRAB_RADIUS = 60; // px, qué tan cerca de la gomera hay que empezar el arrastre
+  const MUZZLE_GRAB_RADIUS = 60; // px, radio visual de la gomera (y agarre por defecto)
   const SPEED_MIN = 350;         // px/s a potencia mínima
   const SPEED_MAX = 1050;        // px/s a potencia máxima
+
+  // Zona de cancelación (playtest externo 2026-09-14, 5 de 5 lo pidieron):
+  // "una vez que hiciste click no hay forma de cancelar el disparo, estás
+  // obligado a disparar". Era literal -- este umbral valía 6 px, menos que el
+  // jitter de un dedo apoyado, así que cualquier roce disparaba y no existía
+  // ninguna vía de escape.
+  //
+  // Con 30 px la zona se vuelve USABLE a propósito: arrastrás de vuelta hacia
+  // la gomera y soltás sin disparar, como en Angry Birds (que los propios
+  // testers citaron). El precio sería perder el tramo más débil de potencia,
+  // así que la potencia se remapea sobre [MIN_DRAG_TO_FIRE, MAX_DRAG] en vez de
+  // [0, MAX_DRAG]: los dos extremos (SPEED_MIN y SPEED_MAX) se conservan
+  // exactos y sólo cambia la curva intermedia. El alcance del arma no se toca.
+  const MIN_DRAG_TO_FIRE = 30;   // px, por debajo de esto el disparo se CANCELA
 
   // Función pura compartida por el disparo real y la previsualización de render.js,
   // así ambos coinciden exactamente (criterio de aceptación: la trayectoria mostrada
@@ -21,20 +34,34 @@
     if (dist < MIN_DRAG_TO_FIRE) return null;
 
     const clamped = Math.min(dist, MAX_DRAG);
-    const power = clamped / MAX_DRAG;
+    // Remapeo: la zona muerta no come rango de potencia (ver MIN_DRAG_TO_FIRE).
+    const power = (clamped - MIN_DRAG_TO_FIRE) / (MAX_DRAG - MIN_DRAG_TO_FIRE);
     const nx = dragVecX / dist;
     const ny = dragVecY / dist;
     const speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * power;
     return { vx: nx * speed, vy: ny * speed };
   }
 
-  // opts: { getMuzzle, isPlaying, canShoot, onFire(vx,vy), onInsufficientEnergy }
+  // opts: { getMuzzle, isPlaying, canShoot, onFire(vx,vy), onInsufficientEnergy,
+  //         puedeEmpezar(x,y) }
+  //
+  // `puedeEmpezar` es opcional y habilita el APUNTADO LIBRE (playtest externo
+  // 2026-09-14): "¿se podría apuntar desde cualquier parte de la pantalla y no
+  // necesariamente dentro de la gomera?". Sin ella se mantiene el agarre viejo
+  // por radio, que es lo que siguen usando los dos prototipos anteriores.
+  //
+  // Soltar la restricción es casi gratis porque el vector YA se calcula desde
+  // la gomera y no desde el punto de contacto (startX/startY = muzzle): tocar
+  // lejos no mueve el origen del tiro, sólo habilita el gesto. Quién puede
+  // empezar un arrastre lo decide el juego, que es el único que sabe qué hay
+  // debajo del dedo (botones, piso reparable, proyectil interceptable).
   function createInputController(canvas, opts) {
     const state = {
       dragging: false,
       pointerId: null,
       startX: 0, startY: 0,
-      currentX: 0, currentY: 0
+      currentX: 0, currentY: 0,
+      anclaLibre: false
     };
 
     function pointerPos(evt) {
@@ -50,13 +77,31 @@
 
       const p = pointerPos(evt);
       const muzzle = opts.getMuzzle();
-      const d = Math.hypot(p.x - muzzle.x, p.y - muzzle.y);
-      if (d > MUZZLE_GRAB_RADIUS) return;
+      const dMuzzle = Math.hypot(p.x - muzzle.x, p.y - muzzle.y);
+      if (opts.puedeEmpezar) {
+        if (!opts.puedeEmpezar(p.x, p.y)) return;
+      } else {
+        if (dMuzzle > MUZZLE_GRAB_RADIUS) return;
+      }
 
       state.dragging = true;
       state.pointerId = evt.pointerId;
-      state.startX = muzzle.x;
-      state.startY = muzzle.y;
+      // Ancla del arrastre. Dentro de la gomera se ancla EN la gomera, que es
+      // el gesto de siempre: tirar del elastico. Fuera, el ancla es el punto
+      // que se toco.
+      //
+      // La diferencia no es cosmetica, es un bug que se come el juego: el
+      // arrastre se mide desde el ancla, asi que anclando siempre en la gomera
+      // un simple toque a 150 px de ella YA cuenta como arrastre de 150 px y
+      // dispara casi a potencia plena sin mover el dedo. Con apuntado libre eso
+      // convierte la pantalla entera en un gatillo, y empeora justo la queja
+      // que la zona de cancelacion venia a resolver ("si sin querer hiciste
+      // click, estas obligado a disparar"). Anclando donde se toca, soltar sin
+      // arrastrar no dispara nunca, toque donde toque.
+      const libre = dMuzzle > MUZZLE_GRAB_RADIUS;
+      state.anclaLibre = libre;
+      state.startX = libre ? p.x : muzzle.x;
+      state.startY = libre ? p.y : muzzle.y;
       state.currentX = p.x;
       state.currentY = p.y;
 
@@ -107,7 +152,17 @@
     return {
       isDragging: function () { return state.dragging; },
       getDragPreview: function () {
-        return { startX: state.startX, startY: state.startY, currentX: state.currentX, currentY: state.currentY };
+        return { startX: state.startX, startY: state.startY,
+                 currentX: state.currentX, currentY: state.currentY,
+                 anclaLibre: state.anclaLibre };
+      },
+      // El render necesita saberlo para AVISAR que soltar acá no dispara. Una
+      // zona de cancelación que no se ve no sirve de nada: el jugador tiene que
+      // enterarse antes de soltar, no después.
+      enCancelacion: function () {
+        if (!state.dragging) return false;
+        return Math.hypot(state.startX - state.currentX,
+                          state.startY - state.currentY) < MIN_DRAG_TO_FIRE;
       }
     };
   }

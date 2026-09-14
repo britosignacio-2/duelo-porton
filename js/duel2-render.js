@@ -990,6 +990,179 @@
     ctx.fillText(estado.reparar.costo + '⚡', br.x, br.y + 16);
   }
 
+  // Obstaculos de la arena. Se dibujan con el color del material y el mismo
+  // contorno oscuro que los pisos, para que se lean como parte del mundo y no
+  // como un rectangulo pegado encima -- y sobre todo para que el jugador sepa
+  // de UN VISTAZO contra que material esta, que es lo que decide el arma.
+  //
+  // El daño se muestra en la silueta y no con una barra de vida: una barra mas
+  // en pantalla compite con las dos de energia, y aca alcanza con que se vea
+  // desmoronarse desde arriba, que es como se rompe todo lo demas en el juego.
+  // Varia la LUMINANCIA del material sin cambiarle el tono. Es obligatorio:
+  // el color ES la informacion de material (dorado=madera, verde patina=metal,
+  // rojo ladrillo=piedra), asi que alternar unidades con OTRO color rompe justo
+  // lo unico que a escala de telefono si se lee de un vistazo.
+  function tono(hex, f) {
+    const r = parseInt(hex.slice(1, 3), 16),
+          g = parseInt(hex.slice(3, 5), 16),
+          b = parseInt(hex.slice(5, 7), 16);
+    const c = v => Math.max(0, Math.min(255, Math.round(v * f)));
+    return 'rgb(' + c(r) + ',' + c(g) + ',' + c(b) + ')';
+  }
+
+  // Apila unidades DESDE EL EXTREMO FIJO del obstaculo, recortadas al rect.
+  // Un apoyado crece desde el piso y un colgante desde su techo, asi los dos
+  // pierden unidades ENTERAS al romperse en vez de quedar cortados por la
+  // mitad -- que es la propiedad que hace que un apilamiento siga leyendose
+  // dañado, medido en `obstaculos-prueba-honesta-2026-09-14.html`.
+  function apilar(ctx, o, paso, dibujo) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(o.x, o.y, o.w, o.h); ctx.clip();
+    if (o.anclaje === 'aire') {
+      let i = 0;
+      for (let yy = o.y; yy < o.y + o.h; yy += paso, i++) dibujo(yy, i);
+    } else {
+      let i = 0;
+      for (let yy = o.y + o.h - paso; yy > o.y - paso; yy -= paso, i++) dibujo(yy, i);
+    }
+    ctx.restore();
+  }
+
+  // La forma del obstaculo esta ATADA AL MATERIAL a proposito, no es decoracion:
+  // asi el material se comunica por color Y por forma. Una forma suelta que a
+  // veces es metal y a veces piedra seria ruido -- haria dudar en vez de ayudar
+  // a elegir el arma, que es la decision que el obstaculo viene a provocar.
+  //
+  // Las tres llenan el rect completo: un hueco visual que no es hueco de
+  // colision le miente al jugador igual que una silueta que se sale del rect.
+  const SILUETA = {
+    madera: function (ctx, o, base) {          // palets apilados
+      const paso = Math.max(9, o.h * 0.17);
+      apilar(ctx, o, paso, function (yy) {
+        ctx.fillStyle = base;
+        ctx.fillRect(o.x, yy, o.w, paso - 2);
+        ctx.fillStyle = 'rgba(36,16,5,0.38)';
+        ctx.fillRect(o.x, yy + paso - 4, o.w, 3);
+        ctx.fillStyle = 'rgba(36,16,5,0.20)';
+        ctx.fillRect(o.x + o.w * 0.30, yy, 2, paso - 4);
+        ctx.fillRect(o.x + o.w * 0.64, yy, 2, paso - 4);
+      });
+    },
+    metal: function (ctx, o, base) {           // bidones, en dos columnas
+      const cols = Math.max(2, Math.round(o.w / 14));
+      const cw = o.w / cols, paso = Math.max(10, o.h * 0.19);
+      apilar(ctx, o, paso, function (yy, i) {
+        for (let c = 0; c < cols; c++) {
+          const bx = o.x + c * cw;
+          ctx.fillStyle = ((c + i) % 2) ? base : tono(base, 1.3);
+          ctx.fillRect(bx + 1, yy + 1, cw - 2, paso - 2);
+          ctx.strokeStyle = 'rgba(18,10,6,0.85)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx + 1, yy + 1, cw - 2, paso - 2);
+          ctx.fillStyle = 'rgba(18,10,6,0.42)';
+          ctx.fillRect(bx + 1, yy + paso * 0.32, cw - 2, 1.5);
+          ctx.fillRect(bx + 1, yy + paso * 0.66, cw - 2, 1.5);
+        }
+      });
+    },
+    piedra: function (ctx, o, base) {          // bloques trabados
+      const paso = Math.max(10, o.h * 0.18);
+      apilar(ctx, o, paso, function (yy, i) {
+        const off = (i % 2) ? -o.w * 0.25 : 0;
+        for (let c = -1; c < 2; c++) {
+          const bx = o.x + off + c * (o.w * 0.55) + o.w * 0.22, bw = o.w * 0.52;
+          ctx.fillStyle = (c % 2) ? tono(base, 0.82) : base;
+          ctx.fillRect(bx, yy + 1, bw, paso - 3);
+          ctx.strokeStyle = 'rgba(18,10,6,0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(bx, yy + 1, bw, paso - 3);
+        }
+      });
+    }
+  };
+
+  function drawObstaculos(ctx, obstaculos, nowMs) {
+    if (!obstaculos) return;
+    for (const o of obstaculos) {
+      if (!o.alive) continue;
+      const vida = o.maxHp ? o.hp / o.maxHp : 1;
+      // El rect YA es lo que queda en pie (`resizeObstaculo` lo achica con cada
+      // golpe), asi que se dibuja tal cual. Antes esto derivaba su propia
+      // altura y la colision usaba otra: el jugador veia un hueco que la fisica
+      // no tenia.
+      const base = DF.Weapons.MATERIAL_COLOR[o.material] || '#9c2b2b';
+
+      ctx.save();
+      // Los colgantes necesitan un tirante hasta el borde de arriba: sin eso
+      // no se leen como colgados sino como un bloque flotando por error, y el
+      // jugador no entiende por que hay paso libre abajo.
+      if (o.anclaje === 'aire') {
+        ctx.strokeStyle = 'rgba(36,16,5,0.55)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(o.x + o.w / 2, 0);
+        ctx.lineTo(o.x + o.w / 2, o.y);
+        ctx.stroke();
+      }
+
+      // Fondo oscuro debajo de las unidades: es lo que las separa entre si y
+      // las hace leer como OBJETOS y no como una textura sobre color plano --
+      // la diferencia entre 29% y 14% de distinguibilidad cuando esta roto.
+      ctx.fillStyle = '#1d0e06';
+      ctx.fillRect(o.x, o.y, o.w, o.h);
+      (SILUETA[o.material] || SILUETA.piedra)(ctx, o, base);
+
+      // Grietas cuando esta por caer: el aviso de que un tiro mas lo abre.
+      if (vida < 0.5) {
+        ctx.strokeStyle = 'rgba(36,16,5,0.75)';
+        ctx.lineWidth = 1.5;
+        const n = vida < 0.25 ? 3 : 2;
+        for (let i = 0; i < n; i++) {
+          const yy = o.y + o.h * (0.25 + i * 0.28);
+          ctx.beginPath();
+          ctx.moveTo(o.x, yy);
+          ctx.lineTo(o.x + o.w * 0.55, yy + 5);
+          ctx.lineTo(o.x + o.w, yy - 3);
+          ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = '#241005';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(o.x, o.y, o.w, o.h);
+      ctx.restore();
+    }
+  }
+
+  // Aviso de cancelacion (playtest externo 2026-09-14). Con la zona muerta en
+  // 30 px, soltar cerca de la gomera ya NO dispara -- pero eso hay que verlo
+  // antes de soltar, no descubrirlo despues. Sin este dibujo el unico tell era
+  // que la flecha y la trayectoria desaparecian, y "se borro" no comunica "si
+  // soltas aca, no sale el tiro".
+  function drawCancelHint(ctx, muzzle, radio, nowMs) {
+    const pulso = 0.55 + 0.45 * Math.sin(nowMs / 140);
+    ctx.save();
+    ctx.globalAlpha = 0.45 + 0.35 * pulso;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(muzzle.x, muzzle.y, radio, 0, Math.PI * 2);
+    ctx.strokeStyle = '#e8d7c3';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const c = radio * 0.30;
+    ctx.beginPath();
+    ctx.moveTo(muzzle.x - c, muzzle.y - c); ctx.lineTo(muzzle.x + c, muzzle.y + c);
+    ctx.moveTo(muzzle.x + c, muzzle.y - c); ctx.lineTo(muzzle.x - c, muzzle.y + c);
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#e8d7c3';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SOLTAR = CANCELAR', muzzle.x, muzzle.y + radio + 14);
+    ctx.restore();
+  }
+
   // Marca en la torre rival contra que pisos el arma elegida es fuerte o floja.
   // "No termino de entender para que sirve un arma u otra": la matriz existia
   // solo como texto abstracto abajo. Aca se ve DONDE se toma la decision.
@@ -1054,6 +1227,8 @@
     drawWindGauge: drawWindGauge,
     drawParticles: drawParticles,
     drawRepairHints: drawRepairHints,
+    drawCancelHint: drawCancelHint,
+    drawObstaculos: drawObstaculos,
     drawProjectiles: drawProjectiles,
     drawSlingshot: drawSlingshot,
     drawHitMarks: drawHitMarks,
